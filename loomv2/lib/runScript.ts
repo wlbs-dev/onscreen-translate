@@ -15,7 +15,9 @@ export function runScript(opts: {
   python: string
   script: string
   args: string[]
-  cwd?: string 
+  cwd?: string
+  // Extra progress parser (0–100) for scripts that don't emit PROGRESS: lines
+  parseProgress?: (line: string) => number | null
 }): Promise<void> {
   const { jobId, stage, python, script, args } = opts
 
@@ -28,6 +30,7 @@ export function runScript(opts: {
       env: { ...process.env, PYTHONUNBUFFERED: "1" },
     })
 
+    let lastLine = ""
     const handleLine = (line: string) => {
       if (!line.trim()) return
       console.log(`[${stage}]`, line)
@@ -37,7 +40,11 @@ export function runScript(opts: {
       const m = line.match(/^PROGRESS:([\d.]+)$/)
       if (m) {
         updateStage(jobId, stage, { progress: Math.round(parseFloat(m[1]) * 100) })
+      } else {
+        const p = opts.parseProgress?.(line)
+        if (p != null) updateStage(jobId, stage, { progress: p })
       }
+      lastLine = line
     }
 
     let stdoutBuf = ""
@@ -68,7 +75,10 @@ export function runScript(opts: {
       if (code === 0) {
         updateStage(jobId, stage, { status: "done", progress: 100, message: "Done" })
       } else {
-        updateStage(jobId, stage, { status: "error", message: `Exited with code ${code}` })
+        updateStage(jobId, stage, {
+          status: "error",
+          message: lastLine ? `Exited with code ${code}: ${lastLine}` : `Exited with code ${code}`,
+        })
       }
       resolve()
     })
