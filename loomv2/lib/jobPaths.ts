@@ -2,8 +2,9 @@
 import path from "path"
 import { execSync } from "child_process"
 
+// Resolve from the cwd (loomv2/) — __dirname points into .next/ once bundled
 export const WORKSPACE = process.env.WORKSPACE_DIR
-  ?? path.resolve(__dirname, "../../../workspace")
+  ?? path.resolve(process.cwd(), "..", "workspace")
 
 export const SCRIPTS_DIR = process.env.SCRIPTS_DIR
   ?? path.resolve(WORKSPACE, "../scripts")

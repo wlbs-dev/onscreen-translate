@@ -1,10 +1,10 @@
 import { NextResponse, NextRequest } from "next/server"
 import fs from "fs"
 import path from "path"
-import { jobPaths, isValidJobId } from "../../../lib/jobPaths"
+import { jobPaths, isValidJobId, WORKSPACE } from "../../../lib/jobPaths"
 
-const JOBS_DIR    = path.join(process.cwd(), "..", "workspace", "jobs")
-const UPLOADS_DIR = path.join(process.cwd(), "..", "workspace", "uploads")
+const JOBS_DIR    = path.join(WORKSPACE, "jobs")
+const UPLOADS_DIR = path.join(WORKSPACE, "uploads")
 
 export async function GET() {
   if (!fs.existsSync(JOBS_DIR)) return NextResponse.json([])
