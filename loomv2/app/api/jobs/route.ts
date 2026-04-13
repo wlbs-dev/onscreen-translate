@@ -1,7 +1,7 @@
 import { NextResponse, NextRequest } from "next/server"
 import fs from "fs"
 import path from "path"
-import { jobPaths } from "../../../lib/jobPaths"
+import { jobPaths, isValidJobId } from "../../../lib/jobPaths"
 
 const JOBS_DIR    = path.join(process.cwd(), "..", "workspace", "jobs")
 const UPLOADS_DIR = path.join(process.cwd(), "..", "workspace", "uploads")
@@ -50,7 +50,7 @@ export async function DELETE(req: NextRequest) {
   try {
     const body = await req.json()
     const id = body?.id
-    if (typeof id !== "string") {
+    if (!isValidJobId(id)) {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 })
     }
 
@@ -71,7 +71,7 @@ export async function PATCH(req: Request) {
     const body = await req.json()
     const id = body?.id
     const label = body?.label
-    if (typeof id !== "string" || typeof label !== "string") {
+    if (!isValidJobId(id) || typeof label !== "string") {
       return NextResponse.json({ error: "Invalid payload" }, { status: 400 })
     }
 

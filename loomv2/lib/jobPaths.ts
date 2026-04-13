@@ -8,7 +8,15 @@ export const WORKSPACE = process.env.WORKSPACE_DIR
 export const SCRIPTS_DIR = process.env.SCRIPTS_DIR
   ?? path.resolve(WORKSPACE, "../scripts")
 
+const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Job ids are UUIDs from /api/upload; anything else must never reach path.join
+export function isValidJobId(id: unknown): id is string {
+  return typeof id === "string" && JOB_ID_RE.test(id)
+}
+
 export function jobPaths(jobId: string) {
+  if (!isValidJobId(jobId)) throw new Error(`Invalid jobId: ${jobId}`)
   const jobDir = path.join(WORKSPACE, "uploads", jobId)
   return {
     jobDir,

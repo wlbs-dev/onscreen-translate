@@ -5,7 +5,7 @@
  */
 import fs from "fs"
 import path from "path"
-import { WORKSPACE } from "./jobPaths"
+import { WORKSPACE, isValidJobId } from "./jobPaths"
 
 export type JobStage = "ocr" | "translate" | "render"
 
@@ -41,6 +41,7 @@ function jobFile(id: string) {
 // ── Internal read / write ─────────────────────────────────────────────────────
 
 function readJob(id: string): Job | undefined {
+  if (!isValidJobId(id)) return undefined
   const f = jobFile(id)
   if (!fs.existsSync(f)) return undefined
   try {
@@ -120,6 +121,7 @@ export function appendLog(id: string, stage: JobStage, line: string): void {
 }
 
 export function deleteJob(id: string): void {
+  if (!isValidJobId(id)) return
   const f = jobFile(id)
   if (fs.existsSync(f)) fs.unlinkSync(f)
   try {
