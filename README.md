@@ -22,9 +22,9 @@ Video → OCR → Translation → Render → Output video
 | Layer | Tech |
 |---|---|
 | Frontend | Next.js (App Router), React, Tailwind, shadcn/ui |
-| OCR | Python script using EasyOCR / Tesseract |
+| OCR | Python script using PaddleOCR (frames extracted with ffmpeg) |
 | Translation | Sarvam AI (`mayura:v1`) + optional OpenAI (`gpt-4o-mini`) grouping |
-| Rendering | Python + OpenCV / Pillow |
+| Rendering | Python + Playwright (text), OpenCV / Pillow (compositing), ffmpeg (encode) |
 | Job management | Node.js file-based job store |
 
 ---
@@ -33,6 +33,7 @@ Video → OCR → Translation → Render → Output video
 
 - Node.js 18+
 - Python 3.10+
+- ffmpeg on your `PATH`
 - `pip install python-dotenv` (and other script deps — see below)
 - A Sarvam AI API key → [sarvam.ai](https://sarvam.ai)
 - An OpenAI API key (optional, for `--ai` translation mode)
@@ -44,15 +45,18 @@ Video → OCR → Translation → Render → Output video
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/yourname/translate-video
-cd translate-video
+git clone https://github.com/anshullaikar/onscreen-translate
+cd onscreen-translate/loomv2
 npm install
 ```
 
 ### 2. Python dependencies
 
 ```bash
-pip install python-dotenv easyocr opencv-python pillow
+cd scripts
+python -m venv .venv && source .venv/bin/activate   # the web UI prefers scripts/.venv if it exists
+pip install python-dotenv paddleocr paddlepaddle opencv-python pillow numpy playwright
+playwright install chromium
 ```
 
 ### 3. Environment variables
@@ -67,6 +71,7 @@ OPENAI_API_KEY=your_openai_key_here   # optional, only needed for --ai mode
 ### 4. Run the dev server
 
 ```bash
+cd loomv2
 npm run dev
 ```
 
@@ -88,9 +93,11 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### Python scripts (direct)
 
+Run these from the `scripts/` directory — the renderer loads its fonts from `assets/` by relative path.
+
 **OCR:**
 ```bash
-python scripts/ocr_frames.py --video path/to/video.mp4 --output annotated/
+python scripts/ocr_annotate.py --input path/to/video.mp4 --output-dir annotated/
 ```
 
 **Translation — standard:**
@@ -105,7 +112,7 @@ python scripts/translate_detections.py --detections annotated/ocr_detections.jso
 
 **Render:**
 ```bash
-python scripts/render_overlays.py --video path/to/video.mp4 --translated annotated/translated_detections.json --output out.mp4
+python scripts/render_translations.py --input path/to/video.mp4 --detections annotated/translated_detections.json --output out.mp4
 ```
 
 ---
@@ -132,49 +139,50 @@ python scripts/render_overlays.py --video path/to/video.mp4 --translated annotat
 ## Project structure
 
 ```
-translate-video/
-├── app/                        # Next.js app router
-│   ├── api/
-│   │   ├── jobs/               # Job CRUD
-│   │   ├── detections/             
-│   │   ├── output/             # Serve rendered video
-│   │   ├── save-events/             
-│   │   ├── upload/             
-│   │   ├── video/             
-│   │   └── run/
-│   │       ├── translate/      # POST: start translation, GET status
-│   │       └── render/         # POST: start render, GET status
-│   └── page.tsx
-├── components/
-│   ├── Dashboard.tsx           # Job list with status badges + retranslate dialog
-│   ├── VideoPlayer.tsx         # Video + overlay preview
-│   ├── Timeline.tsx            # Multi-lane NLE-style timeline editor
-│   ├── Sidebar.tsx             # GUI Sidebar
-│   ├── OverlayCanvas.tsx       # Canvas with the text boxes
-│   ├── UploadModal.tsx         # Upload modal for video uploads
-│   ├── Editor.tsx              # Editor GUI page
-│   └── Header.tsx
-├── lib/
-│   ├── jobStore.ts             # File-based job persistence
-│   ├── jobPaths.ts             # Workspace path helpers
-│   ├── jobPaths.ts             # Workspace path helpers
-│   └── runScript.ts            # Python script runner with stdio logging
+onscreen-translate/
+├── loomv2/                         # Next.js app (App Router)
+│   ├── app/
+│   │   ├── api/
+│   │   │   ├── upload/             # POST: upload video, create job
+│   │   │   ├── run/
+│   │   │   │   ├── ocr/            # POST: start OCR, GET status
+│   │   │   │   └── translate/      # POST: start translation, GET status
+│   │   │   ├── render/             # POST: start render, GET status
+│   │   │   ├── jobs/               # List, rename, delete jobs
+│   │   │   ├── detections/         # Read/save edited translated detections
+│   │   │   ├── video/              # Stream input video
+│   │   │   └── output/             # Serve rendered video
+│   │   └── page.tsx
+│   ├── components/
+│   │   ├── Dashboard.tsx           # Job list with status badges + retranslate dialog
+│   │   ├── Editor.tsx              # Editor page
+│   │   ├── VideoPlayer.tsx         # Video + overlay preview
+│   │   ├── OverlayCanvas.tsx       # Draggable/resizable text boxes
+│   │   ├── Timeline.tsx            # Multi-lane NLE-style timeline editor
+│   │   ├── Sidebar.tsx             # Event list + overlay editor
+│   │   ├── UploadModal.tsx         # Upload → OCR → translate
+│   │   └── Header.tsx
+│   └── lib/
+│       ├── jobStore.ts             # File-based job persistence
+│       ├── jobPaths.ts             # Workspace path helpers, jobId validation
+│       └── runScript.ts            # Python script runner with log streaming
 ├── scripts/
 │   ├── ocr_annotate.py
 │   ├── translate_detections.py
-│   └── render_translations.py
-├── workspace/                  # Runtime job data (gitignored)
-│   └── jobs/
-│       └── <jobId>/
-│           ├── frames/
-│           ├── annotated_frames/
-│           ├── ocr_detections.json
-│           ├── translated_detections.json
-│           └── output.mp4
-├── cache/
-│   └── translation_cache.json  # Translation cache (gitignored)
-└── .env                        # API keys (gitignored)
+│   ├── render_translations.py
+│   ├── assets/                     # Noto Devanagari fonts (OFL)
+│   └── cache/translation_cache.json
+├── workspace/                      # Runtime data (gitignored)
+│   ├── jobs/<jobId>.json           # Job status + logs
+│   └── uploads/<jobId>/
+│       ├── input_video.mp4
+│       ├── frames/                 # Extracted + annotated frames, ocr_detections.json
+│       ├── translated_detections.json
+│       └── output.mp4
+└── .env                            # API keys (gitignored)
 ```
+
+`workspace/` defaults to `../workspace` relative to where the Next.js server runs; override with `WORKSPACE_DIR` (and `SCRIPTS_DIR` for the scripts folder).
 
 ---
 
@@ -191,6 +199,6 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 
 ## Notes
 
-- The `workspace/` and `cache/` directories are created automatically at runtime and should be added to `.gitignore`
+- `workspace/` is created automatically at runtime and is gitignored
 - Sarvam AI's Marathi translation quality is inconsistent for single words — the `--ai` mode significantly improves results by translating full sentences with context
 - For best results on subtitle-style videos (full sentences on screen), use standard mode. For infographic/keyword videos, use `--ai`
