@@ -64,9 +64,8 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 
 ## Gotchas
 
-- **Workspace path is resolved two ways.** `jobPaths.ts` uses `WORKSPACE_DIR` or a path relative to `__dirname`, while `app/api/jobs/route.ts` hardcodes `process.cwd()/../workspace`. Set `WORKSPACE_DIR` and `SCRIPTS_DIR` explicitly if the jobs list and job files disagree.
+- `WORKSPACE` defaults to `process.cwd()/../workspace` (i.e. the server must run from `loomv2/`). Override with `WORKSPACE_DIR` / `SCRIPTS_DIR`.
 - **Scripts must run with `cwd = scripts/`.** The renderer loads `assets/NotoSansDevanagari-Regular.ttf` by relative path.
-- `render/route.ts` spawns Python itself instead of using `runScript`. It derives progress from `N/M` in stdout, not from `PROGRESS:` lines.
-- `jobId` values from query strings and bodies are passed into `path.join` unvalidated. Validate them as UUIDs before adding new routes that touch the filesystem.
-- The root `README.md` mentions EasyOCR/Tesseract and the script names `ocr_frames.py` / `render_overlays.py`. The code actually uses PaddleOCR, `ocr_annotate.py` and `render_translations.py`.
+- Long-running stages go through `runScript`; scripts report progress with `PROGRESS:0.42` lines or a `parseProgress` hook (render matches `N/M frames done`).
+- Job ids are UUIDs. Anything that builds a path from a request id must go through `isValidJobId` / `jobPaths()` (which throws on bad ids).
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.
