@@ -67,7 +67,6 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - **Workspace path is resolved two ways.** `jobPaths.ts` uses `WORKSPACE_DIR` or a path relative to `__dirname`, while `app/api/jobs/route.ts` hardcodes `process.cwd()/../workspace`. Set `WORKSPACE_DIR` and `SCRIPTS_DIR` explicitly if the jobs list and job files disagree.
 - **Scripts must run with `cwd = scripts/`.** The renderer loads `assets/NotoSansDevanagari-Regular.ttf` by relative path.
 - `render/route.ts` spawns Python itself instead of using `runScript`. It derives progress from `N/M` in stdout, not from `PROGRESS:` lines.
-- `save-events/route.ts` is legacy: it writes to `DETECTIONS_PATH`, not a job. The editor saves through `detections`.
 - `jobId` values from query strings and bodies are passed into `path.join` unvalidated. Validate them as UUIDs before adding new routes that touch the filesystem.
 - The root `README.md` mentions EasyOCR/Tesseract and the script names `ocr_frames.py` / `render_overlays.py`. The code actually uses PaddleOCR, `ocr_annotate.py` and `render_translations.py`.
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.
