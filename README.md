@@ -129,6 +129,25 @@ python scripts/render_overlays.py --video path/to/video.mp4 --translated annotat
 
 ---
 
+## Features to add / improve 
+
+**OCR + Translation**
+- Support more target languages beyond Marathi, with a language picker in the UI
+- Cache invalidation UI — right now you have to manually delete the cache file
+- Skip duplicate frames before OCR instead of processing every frame — most frames in a bucket are identical
+
+**Timeline + Editor + UI**
+- Undo/redo support
+- Keyboard shortcuts (space to play/pause, arrow keys to nudge timing)
+- Snap to grid when dragging clips
+- Bulk select and move multiple clips at once
+- Auto font size based on bounding box size instead of fixed size
+
+**Infrastructure**
+- Jobs are lost on server restart since the store is file-based with no DB — add SQLite or similar
+- No queue — multiple concurrent translation/render jobs will compete for resources
+- No cleanup — workspace fills up indefinitely, needs a job expiry/delete policy
+
 ## Project structure
 
 ```
