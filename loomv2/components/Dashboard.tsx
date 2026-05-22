@@ -2,7 +2,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Film, Loader2, Plus, ChevronRight, MoreHorizontal, Check, X, Upload, RefreshCw } from "lucide-react"
+import { Film, Loader2, Plus, ChevronRight, MoreHorizontal, Check, X, Upload, RefreshCw, Settings } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -31,6 +31,7 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import Header from "./Header"
+import { useTranslationSettings, TranslationSettingsDialog, MODEL_INFO } from "./TranslationSettings"
 
 interface Job {
   id: string
@@ -73,6 +74,7 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
   const [translating, setTranslating]             = useState(false)
   const [translatePct, setTranslatePct]           = useState(0)
   const [showTranslateDialog, setShowTranslateDialog] = useState(false)
+  const { config } = useTranslationSettings() 
 
   useEffect(() => { setDraft(job.label) }, [job.label])
 
@@ -231,14 +233,27 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
 
       {/* Translate mode dialog */}
       <AlertDialog open={showTranslateDialog} onOpenChange={setShowTranslateDialog}>
-        <AlertDialogContent onClick={(e) => e.stopPropagation()}>
+        <AlertDialogContent onClick={(e) => e.stopPropagation()} className="max-w-md">
           <AlertDialogHeader>
-            <AlertDialogTitle>Translate with AI?</AlertDialogTitle>
+            <AlertDialogTitle>Translation Settings</AlertDialogTitle>
             <AlertDialogDescription>
-              AI groups blocks semantically before translating — better for
-              keyword-style videos. Requires an OpenAI API key and takes a bit longer.
+              Configure how to translate this video
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <div className="space-y-3 my-4">
+            <div>
+              <p className="text-sm font-medium mb-2">Model: {MODEL_INFO[config.model].label}</p>
+              <p className="text-xs text-muted-foreground">{MODEL_INFO[config.model].description}</p>
+            </div>
+            <div className="bg-muted/30 rounded-lg p-3">
+              <p className="text-xs text-muted-foreground">
+                <strong>Estimated tokens:</strong> ~{config.estimatedTokens} tokens
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                <strong>Estimated cost:</strong> ${(config.estimatedTokens * MODEL_INFO[config.model].costPer1kTokens / 1000 / 100).toFixed(4)}
+              </p>
+            </div>
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel
               onClick={() => {
@@ -270,6 +285,8 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
   const [jobs, setJobs]       = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter]   = useState("all")
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { config } = useTranslationSettings()
 
   const renameJob = async (id: string, label: string) => {
     const res = await fetch("/api/jobs", {
@@ -292,7 +309,14 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
   }
 
   const retranslateJob = async (id: string, useAi: boolean = false) => {
-    const res = await fetch(`/api/run/translate?jobId=${id}&ai=${useAi}`, { method: "POST" })
+    const params = new URLSearchParams({
+      jobId: id,
+      ai: useAi.toString(),
+      model: config.model,
+      openaiKey: config.openaiKey,
+      sarvamKey: config.sarvamKey,
+    })
+    const res = await fetch(`/api/run/translate?${params.toString()}`, { method: "POST" })
     if (!res.ok) throw new Error("Failed to start translation")
 
     return new Promise<void>((resolve, reject) => {
@@ -332,9 +356,14 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
     <div className="h-screen bg-background text-foreground flex flex-col">
       <Header
         rightContent={
-          <Button size="sm" onClick={onNewJob} className="gap-1.5">
-            <Plus size={13} /> Add Video
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button size="sm" variant="outline" onClick={() => setSettingsOpen(true)} className="gap-1.5">
+              <Settings size={13} /> Settings
+            </Button>
+            <Button size="sm" onClick={onNewJob} className="gap-1.5">
+              <Plus size={13} /> Add Video
+            </Button>
+          </div>
         }
       />
 
@@ -385,6 +414,9 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
           )}
         </div>
       </div>
+
+      {/* Translation Settings Dialog */}
+      <TranslationSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   )
 }

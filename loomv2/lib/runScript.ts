@@ -15,7 +15,8 @@ export function runScript(opts: {
   python: string
   script: string
   args: string[]
-  cwd?: string 
+  cwd?: string
+  env?: NodeJS.ProcessEnv
 }): Promise<void> {
   const { jobId, stage, python, script, args } = opts
 
@@ -25,7 +26,7 @@ export function runScript(opts: {
     const proc = spawn(python, [script, ...args], {
       cwd: opts.cwd ?? SCRIPTS_DIR,
       shell: false,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+      env: opts.env || { ...process.env, PYTHONUNBUFFERED: "1" },
     })
 
     const handleLine = (line: string) => {

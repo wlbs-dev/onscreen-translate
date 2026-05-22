@@ -1,7 +1,7 @@
 "use client"
 
 import { useRef, useState, useCallback, useEffect } from "react"
-import { Upload, ChevronRight, AlertCircle, CheckCircle, Loader2, Film, X } from "lucide-react"
+import { Upload, ChevronRight, AlertCircle, CheckCircle, Loader2, Film, X, Settings, KeyRound } from "lucide-react"
 import {
   Dialog,
   DialogContent,
@@ -14,6 +14,14 @@ import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
+import {
+  useTranslationSettings,
+  TranslationSettingsDialog,
+  MODEL_INFO,
+  PROVIDER_LABEL,
+  getMissingTranslationKey,
+  getMissingWordMappingKey,
+} from "./TranslationSettings"
 
 type Stage = "idle" | "uploading" | "ocr" | "translate" | "done" | "error"
 
@@ -45,21 +53,39 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
   const inputRef = useRef<HTMLInputElement>(null)
   const logRef   = useRef<HTMLDivElement>(null)
 
-  const [file, setFile]         = useState<File | null>(null)
-  const [stage, setStage]       = useState<Stage>("idle")
-  const [logLines, setLogLines] = useState<string[]>([])
-  const [progress, setProgress] = useState(0)
-  const [dragOver, setDragOver] = useState(false)
-  const [errorMsg, setErrorMsg] = useState("")
+  const [file, setFile]           = useState<File | null>(null)
+  const [stage, setStage]         = useState<Stage>("idle")
+  const [logLines, setLogLines]   = useState<string[]>([])
+  const [progress, setProgress]   = useState(0)
+  const [dragOver, setDragOver]   = useState(false)
+  const [errorMsg, setErrorMsg]   = useState("")
+  const [keyError, setKeyError]   = useState<string | null>(null)
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { config } = useTranslationSettings()
+
+  // "Use AI" is disabled when:
+  // 1. No word mapping model selected (AI has nothing to do), OR
+  // 2. Word mapping model is selected but its key is missing
+  const noWordMappingModel  = config.wordMappingModel === null
+  const missingWordMappingKey = getMissingWordMappingKey(config)
+  const aiButtonDisabled = noWordMappingModel || !!missingWordMappingKey
+
+  const aiButtonTitle = noWordMappingModel
+    ? "Select a word mapping model in Settings to enable AI"
+    : missingWordMappingKey
+      ? `${PROVIDER_LABEL[missingWordMappingKey]} API key required — add it in Settings`
+      : undefined
 
   useEffect(() => {
     if (isOpen) {
       setFile(null); setStage("idle"); setLogLines([])
-      setProgress(0); setErrorMsg(""); setDragOver(false)
+      setProgress(0); setErrorMsg(""); setDragOver(false); setKeyError(null)
     }
   }, [isOpen])
 
-  // Auto-scroll log
+  // Clear key error when config changes (user saved a key)
+  useEffect(() => { setKeyError(null) }, [config])
+
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
   }, [logLines])
@@ -68,7 +94,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
 
   const pickFile = (f: File) => {
     if (!f.type.startsWith("video/")) { setErrorMsg("Please pick a video file."); return }
-    setFile(f); setErrorMsg(""); setLogLines([]); setStage("idle")
+    setFile(f); setErrorMsg(""); setKeyError(null); setLogLines([]); setStage("idle")
   }
 
   const onInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -100,6 +126,16 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
 
   async function handleTranslate(useAI: boolean = false) {
     if (!file) return
+
+    // Gate on translation model key
+    const missingBase = getMissingTranslationKey(config)
+    if (missingBase) {
+      setKeyError(`${PROVIDER_LABEL[missingBase]} API key is required for the selected translation model.`)
+      setSettingsOpen(true)
+      return
+    }
+
+    setKeyError(null)
     setLogLines([]); setProgress(0); setErrorMsg("")
     try {
       setStage("uploading"); appendLog("Uploading video…")
@@ -116,7 +152,14 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
       appendLog("OCR complete."); setProgress(55)
 
       setStage("translate"); appendLog("Starting translation…")
-      const trRes = await fetch(`/api/run/translate?jobId=${jobId}&ai=${useAI}`, { method: "POST" })
+      const params = new URLSearchParams({
+        jobId,
+        ai: useAI.toString(),
+        model: config.model,
+        openaiKey: config.openaiKey,
+        sarvamKey: config.sarvamKey,
+      })
+      const trRes = await fetch(`/api/run/translate?${params.toString()}`, { method: "POST" })
       if (!trRes.ok) throw new Error(await trRes.text())
       await pollUntilDone(`/api/run/translate/status?jobId=${jobId}`, appendLog, (p) => setProgress(55 + p * 0.44))
       appendLog("Translation complete."); setProgress(100)
@@ -129,8 +172,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
     }
   }
 
-  const currentIdx   = stageOrder.indexOf(stage)
-  const isProcessing = stage !== "idle" && stage !== "done" && stage !== "error"
+  const currentIdx = stageOrder.indexOf(stage)
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -181,6 +223,8 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
           {/* ── File selected ──────────────────────────────────────── */}
           {stage === "idle" && file && (
             <div className="space-y-3">
+
+              {/* File row */}
               <div className="flex items-center gap-3 rounded-lg border bg-muted/20 px-4 py-3">
                 <div className="w-8 h-8 rounded-md bg-primary/10 flex items-center justify-center shrink-0">
                   <Film size={15} className="text-primary" />
@@ -192,12 +236,13 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                 <Button
                   variant="ghost" size="icon"
                   className="h-7 w-7 text-muted-foreground hover:text-foreground shrink-0"
-                  onClick={() => { setFile(null); setErrorMsg("") }}
+                  onClick={() => { setFile(null); setErrorMsg(""); setKeyError(null) }}
                 >
                   <X size={14} />
                 </Button>
               </div>
 
+              {/* Generic error */}
               {errorMsg && (
                 <Alert variant="destructive" className="py-2.5">
                   <AlertCircle size={13} />
@@ -205,14 +250,85 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                 </Alert>
               )}
 
+              {/* Key error */}
+              {keyError && (
+                <Alert variant="destructive" className="py-2.5">
+                  <KeyRound size={13} />
+                  <AlertDescription className="text-xs flex items-center justify-between gap-2">
+                    <span>{keyError}</span>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-6 text-[11px] px-2 shrink-0 border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={() => { setKeyError(null); setSettingsOpen(true) }}
+                    >
+                      <Settings size={10} className="mr-1" /> Open Settings
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* Model info */}
+              <div className="rounded-lg border border-border bg-muted/30 p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-medium">Model: {MODEL_INFO[config.model].label}</p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {config.wordMappingModel
+                        ? `Word mapping: ${MODEL_INFO[config.wordMappingModel].label}`
+                        : "Word mapping: None (Use AI disabled)"}
+                    </p>
+                  </div>
+                  <Button
+                    size="icon" variant="ghost" className="h-7 w-7 shrink-0"
+                    onClick={() => setSettingsOpen(true)}
+                    title="Change translation settings"
+                  >
+                    <Settings size={13} />
+                  </Button>
+                </div>
+              </div>
+
+              {/* Action buttons */}
               <div className="flex gap-2">
-  <Button className="flex-1" onClick={() => handleTranslate(false)}>
-    Start Processing
-  </Button>
-  <Button className="flex-1" variant="secondary" onClick={() => handleTranslate(true)}>
-    Use AI
-  </Button>
-</div>
+                <Button className="flex-1" onClick={() => handleTranslate(false)}>
+                  Start Processing
+                </Button>
+                <Button
+                  className="flex-1"
+                  variant="secondary"
+                  disabled={aiButtonDisabled}
+                  title={aiButtonTitle}
+                  onClick={() => handleTranslate(true)}
+                >
+                  Use AI
+                </Button>
+              </div>
+
+              {/* Hint under the buttons explaining why Use AI is disabled */}
+              {noWordMappingModel && (
+                <p className="text-[11px] text-muted-foreground text-center">
+                  <button
+                    className="underline hover:text-foreground transition-colors"
+                    onClick={() => setSettingsOpen(true)}
+                  >
+                    Select a word mapping model
+                  </button>{" "}
+                  to enable Use AI.
+                </p>
+              )}
+              {!noWordMappingModel && missingWordMappingKey && (
+                <p className="text-[11px] text-muted-foreground text-center">
+                  {PROVIDER_LABEL[missingWordMappingKey]} key missing.{" "}
+                  <button
+                    className="underline hover:text-foreground transition-colors"
+                    onClick={() => setSettingsOpen(true)}
+                  >
+                    Add it in Settings
+                  </button>{" "}
+                  to enable Use AI.
+                </p>
+              )}
             </div>
           )}
 
@@ -270,18 +386,12 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                   <div className="px-3 py-2 border-b bg-muted/50">
                     <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">Activity log</p>
                   </div>
-                  <div
-                    ref={logRef}
-                    className="px-3 py-2 space-y-0.5 max-h-28 overflow-y-auto"
-                  >
+                  <div ref={logRef} className="px-3 py-2 space-y-0.5 max-h-28 overflow-y-auto">
                     {logLines.map((l, i) => (
-                      <p
-                        key={i}
-                        className={cn(
-                          "text-[10px] font-mono leading-relaxed",
-                          l.startsWith("ERROR") ? "text-destructive" : "text-muted-foreground"
-                        )}
-                      >
+                      <p key={i} className={cn(
+                        "text-[10px] font-mono leading-relaxed",
+                        l.startsWith("ERROR") ? "text-destructive" : "text-muted-foreground"
+                      )}>
                         {l}
                       </p>
                     ))}
@@ -334,6 +444,8 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
           </>
         )}
       </DialogContent>
+
+      <TranslationSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
     </Dialog>
   )
 }

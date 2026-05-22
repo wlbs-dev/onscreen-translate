@@ -8,12 +8,14 @@ Two workflows:
   (none)  Original word-mapping approach via Sarvam — works well when full
           sentences appear on screen
 
+Supported models: sarvam, openai-gpt4o, openai-gpt4o-mini, anthropic-claude
+
 Usage:
     # Original workflow
     python translate_detections.py --detections annotated/ocr_detections.json
 
-    # AI-assisted workflow
-    python translate_detections.py --detections annotated/ocr_detections.json --ai
+    # AI-assisted workflow with specific model
+    python translate_detections.py --detections annotated/ocr_detections.json --ai --model openai-gpt4o-mini
 """
 
 import argparse
@@ -51,15 +53,68 @@ CACHE_FILE        = "cache/translation_cache.json"
 OVERLAP_THRESHOLD = 0.3
 IGNORE_WORDS      = {"danmusic", "dan-music"}
 
+# Model info: name -> (api_endpoint_key, pricing_per_1k_tokens_cents)
+MODEL_INFO = {
+    "sarvam": {
+        "provider": "sarvam",
+        "endpoint": "https://api.sarvam.ai/translate",
+        "cost_per_1k_tokens": 0.5,  # cents
+        "model_name": "mayura:v1"
+    },
+    "openai-gpt4o": {
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "cost_per_1k_tokens": 3.0,  # approx cents
+        "model_name": "gpt-4o"
+    },
+    "openai-gpt4o-mini": {
+        "provider": "openai",
+        "endpoint": "https://api.openai.com/v1/chat/completions",
+        "cost_per_1k_tokens": 0.15,  # cents
+        "model_name": "gpt-4o-mini"
+    },
+    "anthropic-claude": {
+        "provider": "anthropic",
+        "endpoint": "https://api.anthropic.com/v1/messages",
+        "cost_per_1k_tokens": 3.0,  # approx cents
+        "model_name": "claude-3-5-sonnet-20241022"
+    }
+}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Translate OCR detections to Marathi")
     p.add_argument("--detections", required=True, help="Path to ocr_detections.json")
     p.add_argument("--output",     default=None)
     p.add_argument("--ai",         action="store_true",
-                   help="Use OpenAI to semantically group blocks before translating")
+                   help="Use AI to semantically group blocks before translating")
+    p.add_argument("--model",      default="openai-gpt4o-mini",
+                   choices=list(MODEL_INFO.keys()),
+                   help="Translation model to use")
     p.add_argument("--verbose",    action="store_true")
     return p.parse_args()
+
+
+# ── Token estimation ─────────────────────────────────────────────────────────
+
+def estimate_tokens(text: str, model: str = "openai-gpt4o-mini") -> int:
+    """
+    Rough token estimation: ~1 token per 4 characters for English,
+    ~1 token per 2 characters for Marathi.
+    """
+    # Simple heuristic: 1 token ≈ 4 chars for English content
+    return max(1, len(text) // 4)
+
+
+def estimate_total_tokens(detections: list[dict], model: str) -> int:
+    """Estimate total tokens needed to translate all detections."""
+    total = 0
+    for frame in detections:
+        for block in frame.get("blocks", []):
+            text = block.get("text", "")
+            if text.strip():
+                total += estimate_tokens(text, model)
+    return total
 
 
 # ── Sarvam translation ────────────────────────────────────────────────────────
@@ -129,6 +184,10 @@ def openai_group_and_translate(blocks: list[str], cache: dict) -> dict[int, str]
         logger.error("OPENAI_API_KEY not set — falling back to per-block Sarvam translation")
         return {}
 
+    # Get model from environment (set by the API)
+    translation_model = os.environ.get("TRANSLATION_MODEL", "openai-gpt4o-mini")
+    model_name = MODEL_INFO.get(translation_model, {}).get("model_name", "gpt-4o-mini")
+
     numbered = "\n".join(f"{i}. {text}" for i, text in enumerate(blocks))
     prompt = f"""You are a Marathi translator for video subtitles.
 
@@ -151,7 +210,7 @@ Output (must have exactly {len(blocks)} entries):
 ]"""
 
     payload = json.dumps({
-        "model": "gpt-4o-mini",
+        "model": model_name,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
     }).encode("utf-8")
@@ -442,11 +501,29 @@ def main() -> None:
     args = parse_args()
     setup_logging(args.verbose)
 
-    if not os.environ.get("SARVAM_API_KEY"):
-        sys.exit("[ERROR] SARVAM_API_KEY not set in .env")
+    # Validate model selection
+    model = args.model
+    if model not in MODEL_INFO:
+        sys.exit(f"[ERROR] Unknown model: {model}")
 
-    if args.ai and not os.environ.get("OPENAI_API_KEY"):
-        sys.exit("[ERROR] --ai requires OPENAI_API_KEY to be set in .env")
+    model_info = MODEL_INFO[model]
+
+    # Validate API keys based on model
+    sarvam_key = os.environ.get("SARVAM_API_KEY", "")
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+
+    if model.startswith("openai") and not openai_key:
+        sys.exit(f"[ERROR] Model '{model}' requires OPENAI_API_KEY to be set in .env")
+
+    if model == "anthropic-claude" and not anthropic_key:
+        sys.exit(f"[ERROR] Model '{model}' requires ANTHROPIC_API_KEY to be set in .env")
+
+    if args.ai and not openai_key and model != "anthropic-claude":
+        sys.exit(f"[ERROR] --ai mode requires OpenAI API key")
+
+    if model == "sarvam" and not sarvam_key:
+        sys.exit("[ERROR] Sarvam model requires SARVAM_API_KEY to be set in .env")
 
     detections_path = str(Path(args.detections).resolve())
     if not os.path.isfile(detections_path):
@@ -459,7 +536,14 @@ def main() -> None:
 
     cache = load_cache()
 
-    workflow = "AI-assisted (OpenAI grouping + Sarvam fallback)" if args.ai else "original (Sarvam word-mapping)"
+    # Estimate tokens
+    estimated_tokens = estimate_total_tokens(detections, model)
+    estimated_cost = (estimated_tokens * model_info["cost_per_1k_tokens"]) / 1000
+    logger.info(f"Model: {model_info['model_name']}")
+    logger.info(f"Estimated tokens: ~{estimated_tokens}")
+    logger.info(f"Estimated cost: ${estimated_cost:.4f}")
+
+    workflow = f"AI-assisted ({model})" if args.ai else f"original ({model})"
     logger.info(f"Workflow: {workflow}")
 
     buckets = segment_into_buckets(detections)

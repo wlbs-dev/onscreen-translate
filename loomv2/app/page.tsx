@@ -4,10 +4,11 @@ import { useState } from "react"
 import Dashboard from "../components/Dashboard"
 import UploadModal from "../components/UploadModal"
 import Editor from "../components/Editor"
+import { TranslationSettingsProvider } from "../components/TranslationSettings"
 
 type Screen = { view: "dashboard" } | { view: "editor"; jobId: string }
 
-export default function Root() {
+function Root() {
   const [screen, setScreen] = useState<Screen>({ view: "dashboard" })
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
 
@@ -38,5 +39,13 @@ export default function Root() {
         }}
       />
     </>
+  )
+}
+
+export default function Page() {
+  return (
+    <TranslationSettingsProvider>
+      <Root />
+    </TranslationSettingsProvider>
   )
 }

@@ -3,10 +3,10 @@ import path from "path"
 import { execSync } from "child_process"
 
 export const WORKSPACE = process.env.WORKSPACE_DIR
-  ?? path.resolve(__dirname, "../../../workspace")
+  ?? path.resolve(process.cwd(), "../workspace")
 
 export const SCRIPTS_DIR = process.env.SCRIPTS_DIR
-  ?? path.resolve(WORKSPACE, "../scripts")
+  ?? path.resolve(process.cwd(), "../scripts")
 
 export function jobPaths(jobId: string) {
   const jobDir = path.join(WORKSPACE, "uploads", jobId)

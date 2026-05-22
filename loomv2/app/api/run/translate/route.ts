@@ -12,6 +12,10 @@ export async function POST(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const jobId = searchParams.get("jobId")
   const useAi = searchParams.get("ai") === "true"
+  const model = searchParams.get("model") || "openai-gpt4o-mini"
+  const openaiKey = searchParams.get("openaiKey") || process.env.OPENAI_API_KEY || ""
+  const sarvamKey = searchParams.get("sarvamKey") || process.env.SARVAM_API_KEY || ""
+
   if (!jobId) return NextResponse.json({ error: "Missing jobId" }, { status: 400 })
 
   const job = getJob(jobId)
@@ -29,6 +33,14 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
+  // Build environment with API keys and model selection
+  const env = {
+    ...process.env,
+    SARVAM_API_KEY: sarvamKey,
+    OPENAI_API_KEY: openaiKey,
+    TRANSLATION_MODEL: model,
+  }
+
   // Fire and forget — client will poll /api/run/translate/status
   runScript({
     jobId,
@@ -36,12 +48,14 @@ export async function POST(req: NextRequest) {
     python: getPython(),
     script: scriptPath,
     args: [
-    "--detections", paths.detections,
-    "--output",     paths.translated,
-    "--verbose",
-    ...(useAi ? ["--ai"] : []),
-  ],
+      "--detections", paths.detections,
+      "--output",     paths.translated,
+      "--verbose",
+      ...(useAi ? ["--ai"] : []),
+      "--model", model,
+    ],
     cwd: SCRIPTS_DIR,
+    env,
   })
 
   return NextResponse.json({ jobId, status: "started" })

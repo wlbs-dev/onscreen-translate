@@ -4,6 +4,10 @@ A full-stack tool that takes a video, detects on-screen English text via OCR, tr
 
 ---
 
+⚠️ **Note:** Currently supports only **Sarvam AI for translation** and **OpenAI for AI-assisted word mapping**. Other models/providers are not yet configured.
+
+---
+
 ## How it works
 
 ```
@@ -52,21 +56,17 @@ npm install
 ### 2. Python dependencies
 
 ```bash
-pip install python-dotenv easyocr opencv-python pillow
+pip install python-dotenv paddleocr==2.7.3 paddlepaddle==2.6.2 opencv-python pillow "numpy<2.0"
 ```
 
 ### 3. Environment variables
 
-Create a `.env` file in the root:
-
-```env
-SARVAM_API_KEY=your_sarvam_key_here
-OPENAI_API_KEY=your_openai_key_here   # optional, only needed for --ai mode
-```
+No `.env` files are required:
 
 ### 4. Run the dev server
 
 ```bash
+cd loomv2
 npm run dev
 ```
 
@@ -79,6 +79,7 @@ Open [http://localhost:3000](http://localhost:3000).
 ### Web UI
 
 1. Click **Add Video** and upload a video
+- Pick the AI model configuration - for translation & word mapping.
 2. OCR runs automatically on upload
 3. Once OCR completes, click **Retranslate** on the video card
 4. Choose **Without AI** (faster, word-mapping via Sarvam) or **Use AI** (better quality, uses OpenAI to group and translate full sentences before splitting back to blocks)
@@ -135,6 +136,7 @@ python scripts/render_overlays.py --video path/to/video.mp4 --translated annotat
 - Support more target languages beyond Marathi, with a language picker in the UI
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Skip duplicate frames before OCR instead of processing every frame — most frames in a bucket are identical
+- Add more configurations for other AI models.
 
 **Timeline + Editor + UI**
 - Undo/redo support
@@ -171,6 +173,7 @@ translate-video/
 │   ├── Sidebar.tsx             # GUI Sidebar
 │   ├── OverlayCanvas.tsx       # Canvas with the text boxes
 │   ├── UploadModal.tsx         # Upload modal for video uploads
+│   ├── TranslationSettings.tsx # Configure your own AI models for translation and word mapping.
 │   ├── Editor.tsx              # Editor GUI page
 │   └── Header.tsx
 ├── lib/
@@ -182,17 +185,14 @@ translate-video/
 │   ├── ocr_annotate.py
 │   ├── translate_detections.py
 │   └── render_translations.py
-├── workspace/                  # Runtime job data (gitignored)
-│   └── jobs/
-│       └── <jobId>/
-│           ├── frames/
-│           ├── annotated_frames/
-│           ├── ocr_detections.json
-│           ├── translated_detections.json
-│           └── output.mp4
-├── cache/
-│   └── translation_cache.json  # Translation cache (gitignored)
-└── .env                        # API keys (gitignored)
+└──  workspace/                  # Runtime job data (gitignored)
+    └── jobs/
+        └── <jobId>/
+            ├── frames/
+            ├── annotated_frames/
+            ├── ocr_detections.json
+            ├── translated_detections.json
+            └── output.mp4
 ```
 
 ---
