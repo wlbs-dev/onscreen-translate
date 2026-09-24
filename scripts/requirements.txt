@@ -1,0 +1,8 @@
+python-dotenv
+# ocr_annotate.py uses the 2.x API (use_gpu / show_log / cls=), removed in PaddleOCR 3
+paddleocr>=2.7,<3
+paddlepaddle
+opencv-python
+pillow
+numpy
+playwright

@@ -4,9 +4,11 @@ render_translations.py — Render output video from translated_detections.json
 """
 
 import argparse
+import html
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,6 +33,9 @@ FONT_PATH       = "assets/NotoSansDevanagari-Regular.ttf"
 FONT_SIZE_MIN   = 14
 FONT_SIZE_MAX   = 72
 FONT_SIZE_RATIO = 0.55
+
+# Colors come from the editable detections JSON and are interpolated into HTML
+HEX_COLOR_RE    = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -187,7 +192,7 @@ def hex_to_rgb(hex_color: str) -> list[int]:
 
 
 def sample_bg_color(frame_path: str, bbox: list[int], saved_hex: str = "") -> list[int]:
-    if saved_hex and saved_hex.startswith("#"):
+    if saved_hex and HEX_COLOR_RE.match(saved_hex):
         return hex_to_rgb(saved_hex)
 
     if not frame_path or not os.path.isfile(frame_path):
@@ -277,7 +282,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
             bg_hex  = f"#{r:02x}{g:02x}{b:02x}"
 
             saved_text_color = event.get("text_color", "")
-            if saved_text_color and saved_text_color.startswith("#"):
+            if saved_text_color and HEX_COLOR_RE.match(saved_text_color):
                 text_color = saved_text_color
             else:
                 text_color = "white" if (0.299*r + 0.587*g + 0.114*b) < 128 else "black"
@@ -298,6 +303,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
                 logger.info(f"  [{i+1}/{len(events)}] (blank cover) {bw}x{bh} at ({x1},{y1})")
             else:
                 font_src = f"file:///{Path(FONT_PATH).resolve().as_posix()}"
+                safe_text = html.escape(event["marathi_text"])
                 measure_html = f"""<html><head><style>
                     @font-face {{ font-family: 'NotoDevanagari'; src: url('{font_src}'); }}
                     * {{ margin: 0; padding: 0; }}
@@ -305,7 +311,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
                     span {{ font-family: 'NotoDevanagari', sans-serif;
                             font-size: {font_size}px; color: {text_color};
                             white-space: nowrap; display: inline-block; padding: 2px 4px; }}
-                </style></head><body><span id="t">{event["marathi_text"]}</span></body></html>"""
+                </style></head><body><span id="t">{safe_text}</span></body></html>"""
 
                 page = browser.new_page(viewport={"width": 2000, "height": bh + 20})
                 page.set_content(measure_html)
@@ -327,7 +333,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
                     span {{ font-family: 'NotoDevanagari', sans-serif;
                             font-size: {font_size}px; color: {text_color};
                             text-align: left; padding: 2px 4px; white-space: nowrap; }}
-                </style></head><body><span>{event["marathi_text"]}</span></body></html>"""
+                </style></head><body><span>{safe_text}</span></body></html>"""
 
                 page = browser.new_page(viewport={"width": final_w, "height": bh})
                 page.set_content(render_html)
@@ -385,7 +391,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
         "-framerate", str(fps),
         "-i", os.path.join(frames_dir, "frame_%06d.jpg"),
         "-i", input_path,
-        "-map", "0:v", "-map", "1:a",
+        "-map", "0:v", "-map", "1:a?",
         "-c:v", "libx264", "-crf", "18", "-preset", "fast",
         "-c:a", "copy", "-shortest",
         output_path, "-y",

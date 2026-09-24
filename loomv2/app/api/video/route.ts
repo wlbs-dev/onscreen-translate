@@ -16,10 +16,14 @@ export async function GET(req: NextRequest) {
   const total = stat.size
   const range = req.headers.get("range")
 
-  const start = range ? parseInt(range.replace(/bytes=/, "").split("-")[0], 10) : 0
-  const end = range
-    ? (range.split("-")[1] ? parseInt(range.split("-")[1], 10) : Math.min(start + 1024 * 1024, total - 1))
-    : Math.min(1024 * 1024, total) - 1
+  const CHUNK = 1024 * 1024
+  const m = range?.match(/^bytes=(\d*)-(\d*)$/)
+  const start = m?.[1] ? parseInt(m[1], 10) : 0
+  // Clamp to the file and to one chunk so a huge Range can't allocate a huge buffer
+  const end = Math.min(m?.[2] ? parseInt(m[2], 10) : start + CHUNK - 1, start + CHUNK - 1, total - 1)
+  if (start >= total || end < start) {
+    return new Response(null, { status: 416, headers: { "Content-Range": `bytes */${total}` } })
+  }
 
   const chunkSize = end - start + 1
   const buf = Buffer.alloc(chunkSize)

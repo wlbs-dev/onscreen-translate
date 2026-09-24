@@ -34,7 +34,6 @@ Video → OCR → Translation → Render → Output video
 - Node.js 18+
 - Python 3.10+
 - ffmpeg on your `PATH`
-- `pip install python-dotenv` (and other script deps — see below)
 - A Sarvam AI API key → [sarvam.ai](https://sarvam.ai)
 - An OpenAI API key (optional, for `--ai` translation mode)
 
@@ -45,9 +44,9 @@ Video → OCR → Translation → Render → Output video
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/anshullaikar/onscreen-translate
-cd onscreen-translate/loomv2
-npm install
+git clone https://github.com/wlbs-dev/onscreen-translate
+cd onscreen-translate
+(cd loomv2 && npm install)
 ```
 
 ### 2. Python dependencies
@@ -55,18 +54,20 @@ npm install
 ```bash
 cd scripts
 python -m venv .venv && source .venv/bin/activate   # the web UI prefers scripts/.venv if it exists
-pip install python-dotenv paddleocr paddlepaddle opencv-python pillow numpy playwright
+pip install -r requirements.txt
 playwright install chromium
+cd ..
 ```
 
 ### 3. Environment variables
 
-Create a `.env` file in the root:
+Copy the template to `.env` in the repo root and fill in your keys:
 
-```env
-SARVAM_API_KEY=your_sarvam_key_here
-OPENAI_API_KEY=your_openai_key_here   # optional, only needed for --ai mode
+```bash
+cp .env.example .env
 ```
+
+`.env` is gitignored — never commit real keys.
 
 ### 4. Run the dev server
 
@@ -75,7 +76,7 @@ cd loomv2
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). The server binds to `127.0.0.1` only (see [Security](#security)).
 
 ---
 
@@ -93,26 +94,30 @@ Open [http://localhost:3000](http://localhost:3000).
 
 ### Python scripts (direct)
 
-Run these from the `scripts/` directory — the renderer loads its fonts from `assets/` by relative path.
+Run these from the `scripts/` directory — the renderer loads its fonts from `assets/` by relative path, and the translation cache is written to `scripts/cache/`.
+
+```bash
+cd scripts
+```
 
 **OCR:**
 ```bash
-python scripts/ocr_annotate.py --input path/to/video.mp4 --output-dir annotated/
+python ocr_annotate.py --input path/to/video.mp4 --output-dir annotated/
 ```
 
 **Translation — standard:**
 ```bash
-python scripts/translate_detections.py --detections annotated/ocr_detections.json
+python translate_detections.py --detections annotated/ocr_detections.json
 ```
 
 **Translation — AI-assisted (better for keyword/infographic style videos):**
 ```bash
-python scripts/translate_detections.py --detections annotated/ocr_detections.json --ai
+python translate_detections.py --detections annotated/ocr_detections.json --ai
 ```
 
 **Render:**
 ```bash
-python scripts/render_translations.py --input path/to/video.mp4 --detections annotated/translated_detections.json --output out.mp4
+python render_translations.py --input path/to/video.mp4 --detections annotated/translated_detections.json --output out.mp4
 ```
 
 ---
@@ -132,7 +137,7 @@ python scripts/render_translations.py --input path/to/video.mp4 --detections ann
 - Works much better for infographic/keyword-style videos where words are spread across visual elements
 - Falls back to Sarvam for any block OpenAI misses
 
-**Translation cache** is stored at `scripts/cache/translation_cache.json` to avoid redundant API calls. Delete it to force a fresh translation.
+**Translation cache** is stored at `scripts/cache/translation_cache.json` (created on first run, gitignored) to avoid redundant API calls. Delete it to force a fresh translation.
 
 ---
 
@@ -189,8 +194,9 @@ onscreen-translate/
 │   ├── ocr_annotate.py
 │   ├── translate_detections.py
 │   ├── render_translations.py
+│   ├── requirements.txt
 │   ├── assets/                     # Noto Devanagari fonts (OFL)
-│   └── cache/translation_cache.json
+│   └── cache/translation_cache.json  # Created at runtime (gitignored)
 ├── workspace/                      # Runtime data (gitignored)
 │   ├── jobs/<jobId>.json           # Job status + logs
 │   └── uploads/<jobId>/
@@ -198,6 +204,7 @@ onscreen-translate/
 │       ├── frames/                 # Extracted + annotated frames, ocr_detections.json
 │       ├── translated_detections.json
 │       └── output.mp4
+├── .env.example                    # Template — copy to .env
 └── .env                            # API keys (gitignored)
 ```
 
@@ -221,3 +228,16 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 - `workspace/` is created automatically at runtime and is gitignored
 - Sarvam AI's Marathi translation quality is inconsistent for single words — the `--ai` mode significantly improves results by translating full sentences with context
 - For best results on subtitle-style videos (full sentences on screen), use standard mode. For infographic/keyword videos, use `--ai`
+- No sample videos are included — bring your own, and only process content you have the rights to
+
+---
+
+## Security
+
+This is a local, single-user tool. The API has **no authentication**: anyone who can reach the server can upload files, run OCR/translation (spending your Sarvam/OpenAI credits), and read or delete jobs. That's why `npm run dev` / `npm start` bind to `127.0.0.1`. Don't expose it on a network or deploy it publicly without putting auth in front of it.
+
+---
+
+## License
+
+[MIT](LICENSE). The bundled Noto Devanagari fonts are under the [SIL Open Font License](scripts/assets/OFL.txt).

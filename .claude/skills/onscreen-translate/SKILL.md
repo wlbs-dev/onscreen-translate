@@ -14,7 +14,7 @@ Video → **OCR** → **Translate** → **Render** → output.mp4, driven from a
 | `scripts/ocr_annotate.py` | ffmpeg frame extraction (default 2 fps) + PaddleOCR in a multiprocessing pool; groups words into line blocks; writes annotated JPGs + `ocr_detections.json` |
 | `scripts/translate_detections.py` | Segments frames into scene "buckets", translates via Sarvam `mayura:v1`; `--ai` groups/translates with OpenAI first and falls back to Sarvam |
 | `scripts/render_translations.py` | Builds an overlay timeline, pre-renders each overlay as HTML with Playwright (Noto Devanagari from `scripts/assets/`), composites with OpenCV/Pillow, encodes with ffmpeg |
-| `scripts/cache/translation_cache.json` | md5(text) → Marathi cache. Delete it to force re-translation |
+| `scripts/cache/translation_cache.json` | md5(text) → Marathi cache, created at runtime and gitignored. Delete it to force re-translation |
 | `loomv2/` | Next.js 16 App Router + React 19 + Tailwind 4 + shadcn/ui editor |
 | `loomv2/lib/jobPaths.ts` | `WORKSPACE`, `SCRIPTS_DIR`, per-job file paths, `getPython()` (prefers `scripts/.venv`) |
 | `loomv2/lib/jobStore.ts` | File-backed job state: `<WORKSPACE>/jobs/<id>.json`, one `JobStatus` per stage (`ocr`/`translate`/`render`) |
@@ -43,10 +43,10 @@ All long-running routes are fire-and-forget; the client polls the `status` endpo
 ```bash
 # Python (from scripts/)
 python -m venv .venv && source .venv/bin/activate
-pip install python-dotenv paddleocr paddlepaddle opencv-python pillow numpy playwright
+pip install -r requirements.txt     # paddleocr pinned <3 (2.x API)
 playwright install chromium        # ffmpeg must also be on PATH
 
-# .env (repo root or scripts/)
+# .env in repo root (cp .env.example .env)
 SARVAM_API_KEY=...
 OPENAI_API_KEY=...                 # only for --ai
 
@@ -68,4 +68,7 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - **Scripts must run with `cwd = scripts/`.** The renderer loads `assets/NotoSansDevanagari-Regular.ttf` by relative path.
 - Long-running stages go through `runScript`; scripts report progress with `PROGRESS:0.42` lines or a `parseProgress` hook (render matches `N/M frames done`).
 - Job ids are UUIDs. Anything that builds a path from a request id must go through `isValidJobId` / `jobPaths()` (which throws on bad ids).
+- The API has no auth and the dev/start scripts bind to `127.0.0.1`. Keep it that way unless auth is added.
+- `render_translations.py` builds HTML for Playwright: always `html.escape` text and validate colors (`HEX_COLOR_RE`) before interpolating.
+- Never commit videos, `.env`, or `scripts/cache/` (all gitignored). The repo is public.
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.

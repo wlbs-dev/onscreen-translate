@@ -16,10 +16,7 @@ export default function Root() {
       {screen.view === "dashboard" && (
         <Dashboard
           onOpenJob={(jobId) => setScreen({ view: "editor", jobId })}
-          onNewJob={() => {
-  console.log("onNewJob fired")
-  setUploadModalOpen(true)
-}}
+          onNewJob={() => setUploadModalOpen(true)}
         />
       )}
       {screen.view === "editor" && (
