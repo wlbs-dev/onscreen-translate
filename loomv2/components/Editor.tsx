@@ -95,6 +95,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const history                             = useHistory<OverlayEvent[]>([], 100)
   const events                              = history.value
   const [builtFrom, setBuiltFrom]           = useState<{ frames: Frame[]; duration: number } | null>(null)
+  // The events value last loaded or saved. Undoing back to it clears "dirty".
+  const [savedEvents, setSavedEvents]       = useState<OverlayEvent[] | null>(null)
   const [selection, setSelection]           = useState<string[]>([])
   const [currentTime, setCurrentTime]       = useState(0)
   const [duration, setDuration]             = useState(0)
@@ -144,8 +146,25 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   // this replaces history, so it only happens when frames/duration change.
   if (frames.length > 0 && duration > 0
       && (builtFrom?.frames !== frames || builtFrom?.duration !== duration)) {
+    const built = buildEvents(frames, duration)
     setBuiltFrom({ frames, duration })
-    history.reset(buildEvents(frames, duration))
+    setSavedEvents(built)
+    history.reset(built)
+  }
+
+  const isDirty = savedEvents !== null && events !== savedEvents
+
+  // Warn before closing/reloading the tab with unsaved edits
+  useEffect(() => {
+    if (!isDirty) return
+    const onBeforeUnload = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = "" }
+    window.addEventListener("beforeunload", onBeforeUnload)
+    return () => window.removeEventListener("beforeunload", onBeforeUnload)
+  }, [isDirty])
+
+  function handleBack() {
+    if (isDirty && !window.confirm("You have unsaved changes. Leave the editor and discard them?")) return
+    onBack()
   }
 
   const { set: setEvents, preview: previewEvents, commit: commitEdit, undo, redo } = history
@@ -319,12 +338,15 @@ export default function Editor({ jobId, onBack }: EditorProps) {
 
   async function handleSave() {
     setSaveStatus("saving")
+    const snapshot = events
     try {
       const r = await fetch(`/api/detections${q}`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ detections: eventsToFrames(events, frames) }),
+        body: JSON.stringify({ detections: eventsToFrames(snapshot, frames) }),
       })
       if (!r.ok) throw new Error("Failed to save")
+      // Edits made while the request was in flight stay dirty
+      setSavedEvents(snapshot)
       setSaveStatus("saved"); setTimeout(() => setSaveStatus("idle"), 2000)
     } catch {
       setSaveStatus("error"); setTimeout(() => setSaveStatus("idle"), 3000)
@@ -341,7 +363,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <Header
-        onBack={onBack}
+        onBack={handleBack}
         rightContent={
           <>
             <span className="text-xs text-muted-foreground tabular-nums">
@@ -367,6 +389,14 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               <Redo2 size={13} />
             </Button>
             <Separator orientation="vertical" className="h-4" />
+
+            {/* Unsaved changes */}
+            {isDirty && saveStatus !== "saving" && (
+              <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400" title="You have unsaved changes">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                Unsaved
+              </span>
+            )}
 
             {/* Save */}
             <Button
