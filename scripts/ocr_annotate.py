@@ -29,6 +29,7 @@ load_dotenv()
 
 from colors import border_median_rgb, rgb_to_hex
 from erase import text_color as erase_text_color
+from media import ensure_browser_playable
 
 
 def setup_logging(verbose: bool) -> None:
@@ -263,6 +264,14 @@ def main() -> None:
     frames_dir = os.path.join(output_dir, "_frames")
     annotated_frames_dir = os.path.join(output_dir, "annotated_frames")
     Path(annotated_frames_dir).mkdir(parents=True, exist_ok=True)
+
+    # MOV/MKV/WebM/HEVC/10-bit uploads → H.264 MP4 in place, so the editor
+    # can play the same file OCR timestamps refer to
+    try:
+        ensure_browser_playable(input_path)
+    except RuntimeError as e:
+        sys.exit(f"[ERROR] {e}")
+    print("PROGRESS:0.02", flush=True)
 
     frames = extract_frames(input_path, frames_dir, args.fps)
     if not frames:
