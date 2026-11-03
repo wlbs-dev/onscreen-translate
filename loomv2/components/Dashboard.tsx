@@ -2,7 +2,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { Film, Loader2, Plus, ChevronRight, MoreHorizontal, Check, X, Upload, RefreshCw } from "lucide-react"
+import { Film, Loader2, Plus, ChevronRight, MoreHorizontal, Check, X, Upload, RefreshCw, MessageSquareWarning } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent } from "@/components/ui/card"
@@ -31,6 +31,8 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import Header from "./Header"
+import FeedbackDialog from "./FeedbackDialog"
+import { redirectToLogin } from "./UserMenu"
 import LanguageSelect, { rememberedLang } from "./LanguageSelect"
 import { languageName } from "@/lib/languages"
 
@@ -41,6 +43,8 @@ interface Job {
   targetLang: string
   aiMode: boolean
   outputExists: boolean
+  durationSec?: number | null
+  owner?: string        // only for admins, on jobs uploaded by someone else
   ocr:       { status: string; progress: number; message?: string }
   translate: { status: string; progress: number; message?: string }
   render:    { status: string; progress: number; message?: string }
@@ -54,6 +58,11 @@ function timeAgo(ts: number) {
   const h = Math.floor(m / 60)
   if (h < 24) return `${h}h ago`
   return `${Math.floor(h / 24)}d ago`
+}
+
+function formatDuration(sec: number) {
+  const s = Math.round(sec)
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`
 }
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
@@ -77,6 +86,8 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
   const [requesting, setRequesting]               = useState(false)
   const [showTranslateDialog, setShowTranslateDialog] = useState(false)
   const [lang, setLang]                           = useState(() => job.targetLang || rememberedLang())
+  const [reportOpen, setReportOpen]               = useState(false)
+  const [reportKey, setReportKey]                 = useState(0)
 
   // Derived from the polled job so it survives reloads and other tabs
   const translating  = requesting || job.translate.status === "running" || job.translate.status === "queued"
@@ -167,6 +178,14 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
                     </>
                   )}
                   <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => { setReportKey((k) => k + 1); setReportOpen(true) }}
+                    className="gap-2"
+                    data-testid="report-problem"
+                  >
+                    <MessageSquareWarning size={12} /> Report a problem with this video
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
                   <DropdownMenuItem onSelect={handleDelete} className="text-destructive focus:text-destructive">
                     Delete
                   </DropdownMenuItem>
@@ -205,8 +224,14 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
         )}
 
         {/* Meta */}
-        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
           <span>{timeAgo(job.createdAt)}</span>
+          {job.durationSec != null && (
+            <>
+              <span>·</span>
+              <span>{formatDuration(job.durationSec)}</span>
+            </>
+          )}
           <span>·</span>
           <span className="font-mono">{job.id.slice(0, 8)}</span>
           {job.targetLang && (
@@ -230,7 +255,24 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
           ))}
         </div>
 
+        {job.owner && (
+          <p className="text-[11px] text-muted-foreground truncate" title="Uploaded by">
+            Owner: <span className="text-foreground">{job.owner}</span>
+          </p>
+        )}
+
       </CardContent>
+
+      {/* Events from the portalled dialog still bubble through React to the card */}
+      <div onClick={(e) => e.stopPropagation()}>
+        <FeedbackDialog
+          key={reportKey}
+          open={reportOpen}
+          onOpenChange={setReportOpen}
+          jobId={job.id}
+          jobLabel={job.label}
+        />
+      </div>
 
       {/* Translate mode dialog */}
       <AlertDialog open={showTranslateDialog} onOpenChange={setShowTranslateDialog}>
@@ -324,8 +366,11 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
     let alive = true
     const load = async () => {
       try {
-        const data = await fetch("/api/jobs").then((r) => r.json())
-        if (alive) { setJobs(data); setLoading(false) }
+        const res = await fetch("/api/jobs")
+        // Session expired or the account was disabled
+        if (res.status === 401) { redirectToLogin(); return }
+        const data = await res.json()
+        if (alive && Array.isArray(data)) { setJobs(data); setLoading(false) }
       } catch { if (alive) setLoading(false) }
     }
     load()

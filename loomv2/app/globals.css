@@ -20,3 +20,22 @@ body { background: #0f0f0f; color: #f0f0f0; font-family: sans-serif; margin: 0; 
     @apply bg-background text-foreground; }
   html {
     @apply font-sans; } }
+
+/* Native-script text on the public pages (landing language list, demo frame).
+   The bundled Noto fonts are served by /api/fonts; unicode-range means a
+   browser only downloads the scripts a page actually shows, and a locally
+   installed Noto is used first. */
+@font-face { font-family: "OT Noto Devanagari"; font-display: swap; src: local("Noto Sans Devanagari"), url("/api/fonts?file=NotoSansDevanagari-Regular.ttf") format("truetype"); unicode-range: U+0900-097F, U+1CD0-1CFF, U+A8E0-A8FF, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Bengali"; font-display: swap; src: local("Noto Sans Bengali"), url("/api/fonts?file=NotoSansBengali-Regular.ttf") format("truetype"); unicode-range: U+0980-09FF, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Gurmukhi"; font-display: swap; src: local("Noto Sans Gurmukhi"), url("/api/fonts?file=NotoSansGurmukhi-Regular.ttf") format("truetype"); unicode-range: U+0A00-0A7F, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Gujarati"; font-display: swap; src: local("Noto Sans Gujarati"), url("/api/fonts?file=NotoSansGujarati-Regular.ttf") format("truetype"); unicode-range: U+0A80-0AFF, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Oriya"; font-display: swap; src: local("Noto Sans Oriya"), url("/api/fonts?file=NotoSansOriya-Regular.ttf") format("truetype"); unicode-range: U+0B00-0B7F, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Tamil"; font-display: swap; src: local("Noto Sans Tamil"), url("/api/fonts?file=NotoSansTamil-Regular.ttf") format("truetype"); unicode-range: U+0B80-0BFF, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Telugu"; font-display: swap; src: local("Noto Sans Telugu"), url("/api/fonts?file=NotoSansTelugu-Regular.ttf") format("truetype"); unicode-range: U+0C00-0C7F, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Kannada"; font-display: swap; src: local("Noto Sans Kannada"), url("/api/fonts?file=NotoSansKannada-Regular.ttf") format("truetype"); unicode-range: U+0C80-0CFF, U+200C-200D, U+25CC; }
+@font-face { font-family: "OT Noto Malayalam"; font-display: swap; src: local("Noto Sans Malayalam"), url("/api/fonts?file=NotoSansMalayalam-Regular.ttf") format("truetype"); unicode-range: U+0D00-0D7F, U+200C-200D, U+25CC; }
+
+.font-indic {
+  font-family: var(--font-sans), "OT Noto Devanagari", "OT Noto Bengali", "OT Noto Gurmukhi", "OT Noto Gujarati",
+    "OT Noto Oriya", "OT Noto Tamil", "OT Noto Telugu", "OT Noto Kannada", "OT Noto Malayalam", sans-serif;
+}

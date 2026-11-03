@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils"
 import { Label } from "@/components/ui/label"
 import LanguageSelect, { rememberedLang } from "@/components/LanguageSelect"
 import { languageName } from "@/lib/languages"
+import { USAGE_CHANGED_EVENT, redirectToLogin } from "@/components/UserMenu"
 
 type Stage = "idle" | "uploading" | "ocr" | "translate" | "done" | "error"
 
@@ -36,6 +37,12 @@ const STAGE_LABELS: Record<Stage, string> = {
 }
 
 const POLL_INTERVAL = 2000
+
+/** The `error` field of a JSON error response, or the raw body. */
+async function errorText(res: Response): Promise<string> {
+  const text = await res.text()
+  try { return JSON.parse(text).error ?? text } catch { return text || `Request failed (${res.status})` }
+}
 const stageOrder: Stage[] = ["uploading", "ocr", "translate", "done"]
 const stageDisplay: Record<string, string> = {
   uploading: "Upload",
@@ -56,6 +63,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
   const [errorMsg, setErrorMsg] = useState("")
   // The parent remounts this modal on every open (key), so state starts fresh
   const [lang, setLang]         = useState(rememberedLang)
+  const [quotaHit, setQuotaHit] = useState(false)
 
   // Auto-scroll log
   useEffect(() => {
@@ -99,18 +107,24 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
 
   async function handleTranslate(useAI: boolean = false) {
     if (!file) return
-    setLogLines([]); setProgress(0); setErrorMsg("")
+    setLogLines([]); setProgress(0); setErrorMsg(""); setQuotaHit(false)
     try {
       setStage("uploading"); appendLog("Uploading video…")
       const form = new FormData(); form.append("video", file)
       const upRes = await fetch("/api/upload", { method: "POST", body: form })
-      if (!upRes.ok) throw new Error(await upRes.text())
+      if (!upRes.ok) {
+        const body = await upRes.json().catch(() => ({}))
+        if (upRes.status === 401) { redirectToLogin(); return }
+        if (upRes.status === 402) setQuotaHit(true)
+        throw new Error(body.error ?? `Upload failed (${upRes.status})`)
+      }
       const { jobId } = await upRes.json()
+      window.dispatchEvent(new Event(USAGE_CHANGED_EVENT))
       appendLog(`Upload complete. Job: ${jobId}`); setProgress(10)
 
       setStage("ocr"); appendLog("Starting OCR…")
       const ocrRes = await fetch(`/api/run/ocr?jobId=${jobId}`, { method: "POST" })
-      if (!ocrRes.ok) throw new Error(await ocrRes.text())
+      if (!ocrRes.ok) throw new Error(await errorText(ocrRes))
       await pollUntilDone(`/api/run/ocr/status?jobId=${jobId}`, appendLog, (p) => setProgress(10 + p * 0.45))
       appendLog("OCR complete."); setProgress(55)
 
@@ -120,7 +134,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
         `/api/run/translate?jobId=${jobId}&ai=${useAI}&lang=${encodeURIComponent(lang)}`,
         { method: "POST" },
       )
-      if (!trRes.ok) throw new Error(await trRes.text())
+      if (!trRes.ok) throw new Error(await errorText(trRes))
       await pollUntilDone(`/api/run/translate/status?jobId=${jobId}`, appendLog, (p) => setProgress(55 + p * 0.44))
       appendLog("Translation complete."); setProgress(100)
 
@@ -301,8 +315,17 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                 </div>
               )}
 
+              {/* Over the monthly quota (402) */}
+              {errorMsg && quotaHit && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3" data-testid="quota-error">
+                  <p className="text-sm font-semibold text-amber-900">Monthly video limit reached</p>
+                  <p className="mt-0.5 text-xs leading-relaxed text-amber-800">{errorMsg}</p>
+                  <p className="mt-1.5 text-xs text-amber-800">Need more minutes for the pilot? Use “Send feedback” in the account menu and we&apos;ll raise your quota.</p>
+                </div>
+              )}
+
               {/* Error */}
-              {errorMsg && (
+              {errorMsg && !quotaHit && (
                 <Alert variant="destructive" className="py-2.5">
                   <AlertCircle size={13} />
                   <AlertDescription className="text-xs">{errorMsg}</AlertDescription>

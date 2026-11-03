@@ -1,15 +1,24 @@
-// Root.tsx
+// AppShell.tsx — the signed-in app at /app (Dashboard ↔ Editor).
+// /app?job=<id> opens that job's editor directly (links from /admin feedback).
 "use client"
 import { useState } from "react"
-import Dashboard from "../components/Dashboard"
-import UploadModal from "../components/UploadModal"
-import Editor from "../components/Editor"
+import Dashboard from "./Dashboard"
+import UploadModal from "./UploadModal"
+import Editor from "./Editor"
 
 type Screen = { view: "dashboard" } | { view: "editor"; jobId: string }
 
-export default function Root() {
-  const [screen, setScreen] = useState<Screen>({ view: "dashboard" })
+export default function AppShell({ initialJobId }: { initialJobId?: string }) {
+  const [screen, setScreen] = useState<Screen>(
+    initialJobId ? { view: "editor", jobId: initialJobId } : { view: "dashboard" }
+  )
   const [uploadModalOpen, setUploadModalOpen] = useState(false)
+
+  const backToDashboard = () => {
+    // Drop ?job= so a reload doesn't reopen the editor
+    if (window.location.search) window.history.replaceState(null, "", "/app")
+    setScreen({ view: "dashboard" })
+  }
 
   return (
     <>
@@ -22,7 +31,7 @@ export default function Root() {
       {screen.view === "editor" && (
         <Editor
           jobId={screen.jobId}
-          onBack={() => setScreen({ view: "dashboard" })}
+          onBack={backToDashboard}
         />
       )}
       <UploadModal
