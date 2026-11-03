@@ -147,11 +147,16 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Translate into several languages from one OCR pass
 
-**Infrastructure (for multi-user hosting)**
-- Real accounts and per-user / per-team job isolation (today there is one shared password)
-- Postgres instead of JSON job files; object storage for videos
-- A worker process (separate from the web server) consuming a durable queue, with GPU OCR
-- Usage metering and billing per processed minute
+**Accounts + pilot (done):** invite-only accounts, per-user job isolation, monthly minute quotas, admin page (users, invites, waitlist, feedback), landing page with waitlist, in-app feedback
+
+**Before opening sign-ups**
+- Password reset and email (invites are links you copy; resets mean editing `users.json`)
+- Teams / shared workspaces (today each job belongs to one user)
+- Payments (Razorpay for INR, Stripe for USD) wired to the plan/quota fields that already exist
+
+**Infrastructure (when one server isn't enough)**
+- Postgres instead of JSON files for jobs/users; object storage for videos
+- A worker process (separate from the web server) consuming a durable queue, with GPU OCR; rate limits shared across processes
 
 ## Project structure
 
