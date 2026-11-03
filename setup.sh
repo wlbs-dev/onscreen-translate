@@ -31,4 +31,15 @@ if [ ! -f .env ]; then
   echo "→ Created .env — add your SARVAM_API_KEY (and OPENAI_API_KEY for AI mode)"
 fi
 
+# Signs login sessions; required by `npm run start:public`
+if ! grep -qE '^SESSION_SECRET=.{32,}' .env; then
+  secret=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+  if grep -qE '^#? *SESSION_SECRET=' .env; then
+    sed -i.bak -E "s|^#? *SESSION_SECRET=.*|SESSION_SECRET=${secret}|" .env && rm -f .env.bak
+  else
+    printf '\nSESSION_SECRET=%s\n' "$secret" >> .env
+  fi
+  echo "→ Generated SESSION_SECRET in .env"
+fi
+
 echo "✓ Ready. Start the UI with: cd loomv2 && npm run dev"

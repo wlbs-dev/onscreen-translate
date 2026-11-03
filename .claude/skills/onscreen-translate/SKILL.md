@@ -20,7 +20,9 @@ Video → **OCR** → **Translate** → **Render** → output.mp4, driven from a
 | `loomv2/lib/jobPaths.ts` | `WORKSPACE`, `SCRIPTS_DIR`, per-job file paths, `getPython()` (prefers `scripts/.venv`) |
 | `loomv2/lib/jobStore.ts` | File-backed job state: `<WORKSPACE>/jobs/<id>.json`, one `JobStatus` per stage (`ocr`/`translate`/`render`) |
 | `loomv2/lib/runScript.ts` | Queue (`MAX_CONCURRENT_JOBS`, default 1, state on `globalThis`) + spawner: streams stdout/stderr into the job log (batched every 400 ms, capped at 500 lines), parses `PROGRESS:0.42` lines, `cancelJob()` kills a job's runs |
-| `loomv2/lib/auth.ts`, `loomv2/proxy.ts` | Optional `APP_PASSWORD` gate. Next 16 renamed `middleware.ts` to `proxy.ts` |
+| `loomv2/lib/auth.ts`, `loomv2/proxy.ts` | Signed `ot_session` cookie (`{uid, exp}` + HMAC, `SESSION_SECRET` or generated `<WORKSPACE>/.session_secret`). `proxy.ts` (Next 16's renamed `middleware.ts`, Node runtime) checks signature/expiry + CSRF only |
+| `loomv2/lib/access.ts` | `requireUser` / `requireAdmin` / `requireJobAccess(req, jobId)` — every route handler must call one: loads the user, rejects disabled accounts, CSRF-checks mutations, 404s jobs the user doesn't own (admins see all; jobs without `ownerId` are admin-only) |
+| `loomv2/lib/users.ts`, `invites.ts`, `usage.ts`, `waitlist.ts`, `feedback.ts` | JSON stores in `WORKSPACE` (atomic writes via `jsonFile.ts`). `usage.json` is an append-only minutes ledger checked against `monthlyMinutes` on upload (402 when over) |
 | `loomv2/instrumentation.ts` | Startup: marks stages left `running`/`queued` as failed, sweeps jobs past `JOB_RETENTION_DAYS` |
 
 Per-job files live in `<WORKSPACE>/uploads/<jobId>/`: `input_video.mp4`, `frames/ocr_detections.json`, `translated_detections.json`, `output.mp4`.
@@ -35,7 +37,12 @@ Per-job files live in `<WORKSPACE>/uploads/<jobId>/`: `input_video.mp4`, `frames
 - `GET/PATCH/DELETE jobs`: list, rename (`label`), delete job + uploads
 - `GET video?jobId=`: stream the input video
 
-- `GET health` (no auth), `POST/DELETE login`, `GET fonts?file=` (bundled Noto fonts for the editor preview)
+- `GET health`, `POST login|logout|signup|waitlist`, `GET fonts?file=` (bundled Noto fonts) — the only routes without a session
+- `GET me` (email, role, `minutesUsed`, `minutesQuota` — null = unlimited), `POST feedback`
+- `GET/PATCH admin/users`, `GET/POST/DELETE admin/invites`, `GET admin/waitlist`, `GET admin/feedback` — 404 for non-admins
+- `upload` and `detections` are excluded from the proxy matcher (proxy truncates bodies > 10 MB); they rely on `requireUser`/`requireJobAccess`
+
+Pages: `/` landing (signed-in → `/app`), `/app` (Dashboard ↔ Editor, `?job=<id>` opens the editor), `/admin`, `/login`, `/signup?invite=`.
 
 All long-running routes queue the script and return immediately (409 if that stage is already queued/running); the client polls the `status` endpoints (see `UploadModal.tsx`, `Dashboard.tsx`, `Editor.tsx`). Stage status is `pending | queued | running | done | error`.
 
@@ -81,7 +88,8 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - **Scripts must run with `cwd = scripts/`.** The renderer loads `assets/NotoSansDevanagari-Regular.ttf` by relative path.
 - Long-running stages go through `runScript`; scripts report progress with `PROGRESS:0.42` lines or a `parseProgress` hook (render matches `N/M frames done`).
 - Job ids are UUIDs. Anything that builds a path from a request id must go through `isValidJobId` / `jobPaths()` (which throws on bad ids).
-- Without `APP_PASSWORD` the API has no auth, so `dev`/`start` bind to `127.0.0.1`. `start:public` binds `0.0.0.0` and refuse to start without `APP_PASSWORD` unless `ALLOW_NO_AUTH=1`.
+- New API routes must call `requireUser`/`requireAdmin`/`requireJobAccess` from `lib/access.ts` — the proxy only proves the cookie is signed, not that the user still exists, is enabled, or owns the job. Return 404 (not 403) for other users' jobs. Never send `passwordHash` (use `toPublicUser`).
+- `dev`/`start` bind to `127.0.0.1`; `start:public` binds `0.0.0.0` and refuses to start without a 32+ char `SESSION_SECRET`. `next.config.ts` also loads the repo-root `.env`. The first `/signup` with zero users becomes admin.
 - The renderer samples cover-patch colours from the raw frame `_frames/{frame_index+1:06d}.jpg`, not the annotated `frame_path` (which has boxes drawn on it).
 - Never load the OCR model only inside a `Pool` initializer: if it fails there the pool respawns workers forever. `ocr_annotate.py` loads it once in the parent first.
 - Adding a language: update `scripts/languages.py`, `loomv2/lib/languages.ts`, and (for a new script) add the font to `scripts/assets/` and `loomv2/lib/editor/indicFonts.ts`.
