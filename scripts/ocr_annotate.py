@@ -2,7 +2,8 @@
 """
 ocr_annotate.py — Local OCR annotation tool (PaddleOCR edition)
 
-Extracts frames at 2fps, runs PaddleOCR in parallel across CPU cores,
+Extracts frames at 2fps, skips frames that are visually identical to the
+last OCR'd frame (static slides), runs PaddleOCR in parallel across CPU cores,
 groups words into line-aware blocks, draws red outlines around blocks +
 blue outlines around words, saves annotated JPGs and ocr_detections.json.
 
@@ -51,6 +52,8 @@ def parse_args() -> argparse.Namespace:
                    help="PaddleOCR language code (default: en)")
     p.add_argument("--workers",    type=int,   default=None,
                    help="Parallel OCR workers (default: cpu_count - 1)")
+    p.add_argument("--no-dedupe",  action="store_true",
+                   help="OCR every frame, even ones identical to the previous OCR'd frame")
     p.add_argument("--verbose",    action="store_true")
     return p.parse_args()
 
@@ -80,6 +83,46 @@ def extract_frames(input_path: str, frames_dir: str, fps: float) -> list[tuple[f
     frames = [(ts, str(p)) for ts, p in zip(timestamps, frame_files)]
     logger.info(f"Extracted {len(frames)} frames")
     return frames
+
+
+# ── Duplicate-frame detection ─────────────────────────────────────────────────
+
+# Frames are compared at this size; a changed pixel differs by more than
+# PIXEL_DIFF (0–255 grey). A frame counts as "changed" once more than
+# CHANGED_FRACTION of pixels changed — small enough that a single new word
+# appearing on a static slide still triggers OCR.
+DEDUPE_SIZE      = (160, 90)
+PIXEL_DIFF       = 30
+CHANGED_FRACTION = 0.0005
+
+
+def frame_signature(path: str):
+    import cv2
+    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    return cv2.resize(img, DEDUPE_SIZE, interpolation=cv2.INTER_AREA)
+
+
+def plan_ocr(frames: list[tuple[float, str]], dedupe: bool) -> list[int]:
+    """
+    For each frame return the index of the frame whose OCR result it should
+    use: itself if it needs OCR, otherwise the last OCR'd keyframe it matches.
+    """
+    import numpy as np
+    source = list(range(len(frames)))
+    if not dedupe:
+        return source
+    key_idx, key_sig = None, None
+    for i, (_, path) in enumerate(frames):
+        sig = frame_signature(path)
+        if key_sig is not None and sig is not None and sig.shape == key_sig.shape:
+            diff = np.abs(sig.astype(np.int16) - key_sig.astype(np.int16))
+            if (diff > PIXEL_DIFF).mean() <= CHANGED_FRACTION:
+                source[i] = key_idx
+                continue
+        key_idx, key_sig = i, sig
+    return source
 
 
 # ── OCR (worker) ──────────────────────────────────────────────────────────────
@@ -222,16 +265,37 @@ def main() -> None:
     logger.info(f"Running PaddleOCR on {len(frames)} frames with {n_workers} workers "
                 f"(lang={args.lang})...")
 
-    tasks = [(i, ts, path) for i, (ts, path) in enumerate(frames)]
+    source = plan_ocr(frames, dedupe=not args.no_dedupe)
+    key_frames = sorted(set(source))
+    skipped = len(frames) - len(key_frames)
+    if skipped:
+        logger.info(f"Skipping {skipped}/{len(frames)} frames identical to an earlier frame")
+    tasks = [(i, frames[i][0], frames[i][1]) for i in key_frames]
 
+    # Load the model once in this process first: it downloads weights on first
+    # use, and if that (or the import) fails inside a Pool initializer the pool
+    # respawns workers forever instead of raising, so the job never finishes.
+    try:
+        _init_worker(args.lang)
+    except Exception as e:
+        sys.exit(f"[ERROR] Could not load PaddleOCR (lang={args.lang}): {e}")
+
+    words_by_frame: dict[int, list[dict]] = {}
     with Pool(
         processes=n_workers,
         initializer=_init_worker,
         initargs=(args.lang,),
     ) as pool:
-        ocr_results = pool.map(_ocr_frame_worker, tasks)
+        for n, (frame_index, _, _, words) in enumerate(
+            pool.imap_unordered(_ocr_frame_worker, tasks), start=1
+        ):
+            words_by_frame[frame_index] = words
+            print(f"PROGRESS:{0.95 * n / len(tasks):.3f}", flush=True)
 
-    ocr_results.sort(key=lambda r: r[0])
+    ocr_results = [
+        (i, ts, path, words_by_frame[source[i]])
+        for i, (ts, path) in enumerate(frames)
+    ]
 
     logger.info("OCR done — annotating frames and writing JSON...")
 
