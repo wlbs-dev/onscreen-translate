@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server"
+import { requireJobAccess } from "../../../../lib/access"
 import { existsSync } from "fs"
 import { getJob } from "../../../../lib/jobStore"
 import { jobPaths, getPython, SCRIPTS_DIR } from "../../../../lib/jobPaths"
@@ -12,6 +13,9 @@ export async function POST(req: NextRequest) {
   const { searchParams } = new URL(req.url)
   const jobId = searchParams.get("jobId")
   if (!jobId) return NextResponse.json({ error: "Missing jobId" }, { status: 400 })
+  // Signed-in owner (or admin) only; 404 for anyone else's job
+  const access = await requireJobAccess(req, jobId)
+  if (access instanceof Response) return access
 
   const job = getJob(jobId)
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 })
