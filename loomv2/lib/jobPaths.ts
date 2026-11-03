@@ -7,8 +7,10 @@ import { execSync } from "child_process"
 export const WORKSPACE = process.env.WORKSPACE_DIR
   ?? path.resolve(process.cwd(), "..", "workspace")
 
+// Relative to the app (loomv2/../scripts), not to WORKSPACE: moving the
+// workspace (WORKSPACE_DIR) must not move where the scripts are found
 export const SCRIPTS_DIR = process.env.SCRIPTS_DIR
-  ?? path.resolve(WORKSPACE, "../scripts")
+  ?? path.resolve(process.cwd(), "..", "scripts")
 
 const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -31,7 +33,7 @@ export function jobPaths(jobId: string) {
 }
 
 export function getPython(): string {
-  // PYTHON wins (e.g. in Docker), then a venv inside scripts/, then system python
+  // PYTHON wins, then a venv inside scripts/, then system python
   if (process.env.PYTHON) return process.env.PYTHON
   const venvWin  = path.join(SCRIPTS_DIR, ".venv", "Scripts", "python.exe")
   const venvUnix = path.join(SCRIPTS_DIR, ".venv", "bin", "python")
