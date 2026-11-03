@@ -5,8 +5,8 @@ translate_detections.py — Translate OCR detections into an Indian language via
 Two workflows:
   --ai    Use OpenAI to semantically group blocks before translating (better
           for infographic / keyword-style videos where words don't form sentences)
-  (none)  Original word-mapping approach via Sarvam — works well when full
-          sentences appear on screen
+  (none)  Sarvam translates each on-screen block on its own — best when each
+          box holds a complete phrase (titles, labels, captions)
 
 Usage:
     # Original workflow
@@ -337,87 +337,37 @@ def dedupe_blocks(bucket: list[dict]) -> list[str]:
     return unique
 
 
-# ── Workflow A: original (no AI) ──────────────────────────────────────────────
+def text_key(text: str) -> str:
+    """Identity of an on-screen text across frames (OCR spacing varies)."""
+    import re
+    return re.sub(r"[\W_]+", "", text.lower())
 
-def translate_bucket_original(bucket: list[dict], cache: dict) -> dict[str, str]:
+
+# ── Workflow A: standard (Sarvam, per block) ──────────────────────────────────
+
+def translate_bucket_standard(bucket: list[dict], cache: dict) -> dict[str, str]:
     """
-    Collect unique clean words from the last frame, translate as one sentence,
-    map translated words back one-by-one.
-    Returns {english_word_lower: translated_word}
+    Translate each on-screen block of the bucket's last frame (when all text
+    is visible) on its own with Sarvam. Returns {block_text_lower: translation}.
+
+    This replaced joining every word into one sentence and handing translated
+    words back to blocks by position: SOV languages (Hindi, Marathi, Tamil…)
+    reorder words, so positional mapping put words in the wrong boxes.
+    Use --ai when a sentence is split across several boxes.
     """
     last_frame = bucket[-1]
-
-    seen = set()
-    ordered_words = []
+    text_to_translation: dict[str, str] = {}
     for block in last_frame["blocks"]:
-        for w in block["words"]:
-            if not is_clean_word(w):
-                continue
-            for token in w["text"].strip().split():
-                if token.lower() not in seen:
-                    seen.add(token.lower())
-                    ordered_words.append(token)
-
-    if not ordered_words:
-        return {}
-
-    full_sentence = " ".join(w.capitalize() for w in ordered_words)
-    logger.info(f"  Sentence: '{full_sentence}'")
-
-    full_translation = sarvam_translate(full_sentence, cache)
-    logger.info(f"  Translation: '{full_translation}'")
-
-    mr_words = full_translation.split()
-    word_to_translation: dict[str, str] = {}
-    for i, en_word in enumerate(ordered_words):
-        word_to_translation[en_word.lower()] = mr_words[i] if i < len(mr_words) else ""
-        logger.debug(f"    '{en_word}' -> '{word_to_translation[en_word.lower()]}'")
-
-    return word_to_translation
-
-
-# OCR fields that must survive translation (the editor preview uses them)
-PASSTHROUGH_FIELDS = ("autoBgColor",)
-
-
-def _passthrough(block: dict) -> dict:
-    return {k: block[k] for k in PASSTHROUGH_FIELDS if k in block}
-
-
-def apply_mapping_original(frame: dict, word_to_translation: dict) -> list[dict]:
-    translated_blocks = []
-    for block in frame["blocks"]:
-        clean_words = [w for w in block["words"] if is_clean_word(w)]
-
-        if not clean_words:
-            translated_blocks.append({
-                "text":        block["text"],
-                "translation": "",
-                "bbox":        block["bbox"],
-                "conf":        block["conf"],
-                "words":       block["words"],
-                **_passthrough(block),
-            })
+        text = block["text"].strip()
+        key = text_key(text)
+        if not text or key in text_to_translation or key in IGNORE_WORDS:
             continue
-
-        translated_parts = []
-        for w in clean_words:
-            tokens = w["text"].strip().lower().split()
-            for token in tokens:
-                mr = word_to_translation.get(token, "")
-                if mr:
-                    translated_parts.append(mr)
-
-        translated_blocks.append({
-            "text":        " ".join(w["text"] for w in clean_words),
-            "translation": " ".join(translated_parts),
-            "bbox":        block["bbox"],
-            "conf":        block["conf"],
-            "words":       clean_words,
-            **_passthrough(block),
-        })
-
-    return translated_blocks
+        if not any(c.isalpha() for c in text):
+            text_to_translation[key] = text  # numbers/symbols stay as-is
+            continue
+        text_to_translation[key] = sarvam_translate(text, cache)
+        logger.info(f"  '{text}' -> '{text_to_translation[key]}'")
+    return text_to_translation
 
 
 # ── Workflow B: AI-assisted ───────────────────────────────────────────────────
@@ -426,8 +376,7 @@ def translate_bucket_ai(bucket: list[dict], cache: dict) -> dict[str, str]:
     """
     Translate using only the last frame (when all words are visible).
     Returns {block_text_lower: translation}.
-    All blocks in the same semantic group share the same translation string;
-    apply_mapping_ai will only emit it once (topmost block).
+    All blocks in the same semantic group share the same translation string.
     """
     last_frame = bucket[-1]
     last_frame_blocks = [b["text"].strip() for b in last_frame["blocks"] if b["text"].strip()]
@@ -442,28 +391,41 @@ def translate_bucket_ai(bucket: list[dict], cache: dict) -> dict[str, str]:
     text_to_translation: dict[str, str] = {}
     for i, block_text in enumerate(last_frame_blocks):
         if i in ai_result:
-            text_to_translation[block_text.lower()] = ai_result[i]
+            text_to_translation[text_key(block_text)] = ai_result[i]
             logger.info(f"  AI: '{block_text}' -> '{ai_result[i]}'")
         else:
             # Fallback: translate this block individually via Sarvam
             logger.info(f"  Fallback Sarvam for: '{block_text}'")
             translation = sarvam_translate(block_text, cache)
-            text_to_translation[block_text.lower()] = translation
+            text_to_translation[text_key(block_text)] = translation
 
     return text_to_translation
 
 
-def apply_mapping_ai(frame: dict, text_to_translation: dict) -> list[dict]:
+# OCR fields that must survive translation (the editor preview uses them)
+PASSTHROUGH_FIELDS = ("autoBgColor", "autoTextColor")
+
+
+def _passthrough(block: dict) -> dict:
+    return {k: block[k] for k in PASSTHROUGH_FIELDS if k in block}
+
+
+def apply_mapping(frame: dict, text_to_translation: dict) -> list[dict]:
+    """
+    Give each block the translation of the matching last-frame block. Blocks
+    in earlier frames may be partial (text typing on), so fall back to any
+    translated block sharing a word with it.
+    """
     translated_blocks = []
 
     for block in frame["blocks"]:
-        key = block["text"].strip().lower()
+        key = text_key(block["text"])
         translation = text_to_translation.get(key, "")
 
         if not translation:
-            key_words = set(key.split())
-            for full_text, full_translation in text_to_translation.items():
-                if key_words & set(full_text.split()):
+            # Partial text (typing on): borrow from a block it is part of
+            for full_key, full_translation in text_to_translation.items():
+                if key and (key in full_key or full_key in key):
                     translation = full_translation
                     break
 
@@ -505,7 +467,7 @@ def main() -> None:
 
     cache = load_cache()
 
-    workflow = "AI-assisted (OpenAI grouping + Sarvam fallback)" if args.ai else "original (Sarvam word-mapping)"
+    workflow = "AI-assisted (OpenAI grouping + Sarvam fallback)" if args.ai else "standard (Sarvam, per block)"
     logger.info(f"Workflow: {workflow}")
     logger.info(f"Target language: {language_name(TARGET_LANG)} ({TARGET_LANG})")
 
@@ -516,26 +478,15 @@ def main() -> None:
         logger.info(f"Bucket {i+1}/{len(buckets)} ({len(bucket)} frames)")
         print(f"PROGRESS:{i / max(len(buckets), 1):.3f}", flush=True)
 
-        if args.ai:
-            text_to_translation = translate_bucket_ai(bucket, cache)
-            for frame in bucket:
-                translated_blocks = apply_mapping_ai(frame, text_to_translation)
-                translated.append({
-                    "frame_index": frame["frame_index"],
-                    "timestamp":   frame["timestamp"],
-                    "frame_path":  frame["frame_path"],
-                    "blocks":      translated_blocks,
-                })
-        else:
-            word_to_translation = translate_bucket_original(bucket, cache)
-            for frame in bucket:
-                translated_blocks = apply_mapping_original(frame, word_to_translation)
-                translated.append({
-                    "frame_index": frame["frame_index"],
-                    "timestamp":   frame["timestamp"],
-                    "frame_path":  frame["frame_path"],
-                    "blocks":      translated_blocks,
-                })
+        text_to_translation = (translate_bucket_ai(bucket, cache) if args.ai
+                               else translate_bucket_standard(bucket, cache))
+        for frame in bucket:
+            translated.append({
+                "frame_index": frame["frame_index"],
+                "timestamp":   frame["timestamp"],
+                "frame_path":  frame["frame_path"],
+                "blocks":      apply_mapping(frame, text_to_translation),
+            })
 
     save_cache(cache)
 
