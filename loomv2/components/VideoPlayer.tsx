@@ -3,6 +3,9 @@
 import { useRef, useEffect, useState, useCallback } from "react"
 import { Play, Pause, Volume2, VolumeX } from "lucide-react"
 import OverlayCanvas from "./OverlayCanvas"
+import type { OverlayEvent } from "@/lib/editor/types"
+
+export type { OverlayEvent }
 
 export interface VideoMeta {
   containerW: number; containerH: number
@@ -10,20 +13,15 @@ export interface VideoMeta {
   letterboxX: number; letterboxY: number; scale: number
 }
 
-export interface OverlayEvent {
-  id: string; blockText: string; translation: string
-  bbox: [number, number, number, number]
-  bgColor: string; textColor: string; fontSize: number
-  startTime: number; endTime: number; frameIndex: number
-  videoMeta?: VideoMeta
-}
-
 interface VideoPlayerProps {
   src: string
   events: OverlayEvent[]
   selectedId: string | null
   onSelect: (id: string | null) => void
-  onUpdateEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  /** Transient update while dragging a box (not recorded in history) */
+  onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  /** Drag finished — record it as one history entry */
+  onCommitEdit: () => void
   onTimeUpdate?: (time: number) => void
   onDurationChange?: (duration: number) => void
   onVideoReady?: (el: HTMLVideoElement) => void
@@ -32,7 +30,7 @@ interface VideoPlayerProps {
 const CONTROLS_H = 36 // height reserved for custom controls bar
 
 export default function VideoPlayer({
-  src, events, selectedId, onSelect, onUpdateEvent,
+  src, events, selectedId, onSelect, onPreviewEvent, onCommitEdit,
   onTimeUpdate, onDurationChange, onVideoReady,
 }: VideoPlayerProps) {
   const videoRef     = useRef<HTMLVideoElement>(null)
@@ -91,7 +89,9 @@ useEffect(() => {
     if (!video) return
 
     const onLoaded = () => {
-      setVideoSize({ w: video.videoWidth, h: video.videoHeight })
+      setVideoSize((prev) =>
+        prev.w === video.videoWidth && prev.h === video.videoHeight
+          ? prev : { w: video.videoWidth, h: video.videoHeight })
       setDuration(video.duration)
       onDurationChange?.(video.duration)
       onVideoReady?.(video)
@@ -135,7 +135,7 @@ useEffect(() => {
 
   const togglePlay = () => {
     const v = videoRef.current; if (!v) return
-    playing ? v.pause() : v.play()
+    if (playing) v.pause(); else v.play()
   }
   const toggleMute = () => {
     const v = videoRef.current; if (!v) return
@@ -177,7 +177,8 @@ return (
           events={activeEvents}
           selectedId={selectedId}
           onSelect={onSelect}
-          onUpdateEvent={onUpdateEvent}
+          onPreviewEvent={onPreviewEvent}
+          onCommitEdit={onCommitEdit}
           videoRect={videoRect}        // ← add this
           videoSize={videoSize}        // ← add this
         />

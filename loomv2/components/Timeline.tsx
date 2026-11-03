@@ -14,7 +14,10 @@ interface TimelineProps {
   onSelectEvent: (id: string, seekTo: number) => void
   onSeek: (t: number) => void
   onAddEvent: (event: OverlayEvent) => void
-  onUpdateEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  /** Transient update while dragging a clip (not recorded in history) */
+  onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  /** Drag finished — record it as one history entry */
+  onCommitEdit: () => void
 }
 
 const PALETTE = [
@@ -63,7 +66,7 @@ function assignLanes(events: OverlayEvent[]): { event: OverlayEvent; lane: numbe
 
 export default function Timeline({
   events, currentTime, duration, selectedId,
-  onSelectEvent, onSeek, onAddEvent, onUpdateEvent,
+  onSelectEvent, onSeek, onAddEvent, onPreviewEvent, onCommitEdit,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
@@ -136,19 +139,23 @@ export default function Timeline({
     if (dragging.edge === "move") {
       const len = dragging.origEnd - dragging.origStart
       const newStart = Math.max(0, Math.min(duration - len, dragging.origStart + dt))
-      onUpdateEvent(dragging.id, { startTime: newStart, endTime: newStart + len })
+      onPreviewEvent(dragging.id, { startTime: newStart, endTime: newStart + len })
     } else if (dragging.edge === "start") {
-      onUpdateEvent(dragging.id, {
+      onPreviewEvent(dragging.id, {
         startTime: Math.max(0, Math.min(dragging.origEnd - 0.1, dragging.origStart + dt)),
       })
     } else {
-      onUpdateEvent(dragging.id, {
+      onPreviewEvent(dragging.id, {
         endTime: Math.min(duration, Math.max(dragging.origStart + 0.1, dragging.origEnd + dt)),
       })
     }
-  }, [dragging, pxPerSec, duration, onUpdateEvent])
+  }, [dragging, pxPerSec, duration, onPreviewEvent])
 
-  const onMouseUp = useCallback(() => setDragging(null), [])
+  const onMouseUp = useCallback(() => {
+    if (!dragging) return
+    setDragging(null)
+    onCommitEdit()
+  }, [dragging, onCommitEdit])
 
   const onRulerClick = useCallback((e: React.MouseEvent<SVGElement>) => {
     const rect = (e.currentTarget as SVGElement).getBoundingClientRect()

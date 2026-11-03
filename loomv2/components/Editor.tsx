@@ -1,8 +1,8 @@
 // Editor.tsx
 "use client"
 
-import { useEffect, useRef, useState, useCallback } from "react"
-import { Save, Play, Download, Loader2, CheckCircle, AlertCircle, Film } from "lucide-react"
+import { useEffect, useEffectEvent, useRef, useState, useCallback } from "react"
+import { Save, Play, Download, Loader2, CheckCircle, AlertCircle, Film, Undo2, Redo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
@@ -10,6 +10,9 @@ import Header from "./Header"
 import VideoPlayer, { OverlayEvent } from "./VideoPlayer"
 import Sidebar from "./Sidebar"
 import Timeline from "./Timeline"
+import { useHistory } from "@/lib/editor/useHistory"
+import { applyPatches, EventPatches } from "@/lib/editor/types"
+import { isTypingTarget } from "@/lib/editor/shortcuts"
 
 interface Block {
   id: string; text: string; translation: string
@@ -84,7 +87,9 @@ interface EditorProps {
 export default function Editor({ jobId, onBack }: EditorProps) {
   const videoRef                            = useRef<HTMLVideoElement | null>(null)
   const [frames, setFrames]                 = useState<Frame[]>([])
-  const [events, setEvents]                 = useState<OverlayEvent[]>([])
+  const history                             = useHistory<OverlayEvent[]>([], 100)
+  const events                              = history.value
+  const [builtFrom, setBuiltFrom]           = useState<{ frames: Frame[]; duration: number } | null>(null)
   const [selectedId, setSelectedId]         = useState<string | null>(null)
   const [currentTime, setCurrentTime]       = useState(0)
   const [duration, setDuration]             = useState(0)
@@ -128,15 +133,31 @@ export default function Editor({ jobId, onBack }: EditorProps) {
     return () => clearInterval(poll)
   }, [renderStatus, jobId])
 
-  useEffect(() => {
-    if (frames.length > 0 && duration > 0) setEvents(buildEvents(frames, duration))
-  }, [frames, duration])
+  // Build events once both detections and the video duration are known.
+  // Done during render (not in an effect) so the first paint already has them;
+  // this replaces history, so it only happens when frames/duration change.
+  if (frames.length > 0 && duration > 0
+      && (builtFrom?.frames !== frames || builtFrom?.duration !== duration)) {
+    setBuiltFrom({ frames, duration })
+    history.reset(buildEvents(frames, duration))
+  }
 
-  const handleUpdateEvent = (id: string, patch: Partial<OverlayEvent>) =>
-    setEvents((prev) => prev.map((ev) => ev.id === id ? { ...ev, ...patch } : ev))
+  const { set: setEvents, preview: previewEvents, commit: commitEdit, undo, redo } = history
 
-  const handleAddEvent = (event: OverlayEvent) =>
-    setEvents((prev) => [...prev, event])
+  // Committed edit (sidebar fields etc). Same event + same fields within 1s
+  // coalesce into a single undo step, so typing a word is one entry.
+  const handleUpdateEvent = useCallback((id: string, patch: Partial<OverlayEvent>) =>
+    setEvents((prev) => applyPatches(prev, { [id]: patch }),
+      { coalesceKey: `edit:${id}:${Object.keys(patch).sort().join(",")}` }), [setEvents])
+
+  // Transient edits while dragging; commitEdit() on pointer-up records one entry
+  const handlePreviewEvents = useCallback((patches: EventPatches) =>
+    previewEvents((prev) => applyPatches(prev, patches)), [previewEvents])
+  const handlePreviewEvent = useCallback((id: string, patch: Partial<OverlayEvent>) =>
+    handlePreviewEvents({ [id]: patch }), [handlePreviewEvents])
+
+  const handleAddEvent = useCallback((event: OverlayEvent) =>
+    setEvents((prev) => [...prev, event]), [setEvents])
 
   const selectedEvent = events.find((e) => e.id === selectedId) ?? null
 
@@ -144,6 +165,25 @@ export default function Editor({ jobId, onBack }: EditorProps) {
     setEvents((prev) => prev.filter((e) => e.id !== selectedId))
     setSelectedId(null)
   }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────
+  const onKeyDown = useEffectEvent((e: KeyboardEvent) => {
+    if (e.defaultPrevented || isTypingTarget(e.target)) return
+    const mod = e.ctrlKey || e.metaKey
+    const key = e.key.toLowerCase()
+    if (mod && !e.altKey && (key === "z" || key === "y")) {
+      e.preventDefault()
+      if (key === "y" || e.shiftKey) redo(); else undo()
+    }
+  })
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => onKeyDown(e)
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [])
+
+  const handleVideoReady = useCallback((el: HTMLVideoElement) => { videoRef.current = el }, [])
 
   const handleSelectFromList = useCallback((id: string, seekTo: number) => {
     setSelectedId(id)
@@ -211,6 +251,23 @@ export default function Editor({ jobId, onBack }: EditorProps) {
             </span>
             <Separator orientation="vertical" className="h-4" />
 
+            {/* Undo / Redo */}
+            <Button
+              size="icon" variant="ghost" className="h-8 w-8"
+              onClick={undo} disabled={!history.canUndo}
+              title="Undo (Ctrl+Z)" aria-label="Undo"
+            >
+              <Undo2 size={13} />
+            </Button>
+            <Button
+              size="icon" variant="ghost" className="h-8 w-8"
+              onClick={redo} disabled={!history.canRedo}
+              title="Redo (Ctrl+Shift+Z)" aria-label="Redo"
+            >
+              <Redo2 size={13} />
+            </Button>
+            <Separator orientation="vertical" className="h-4" />
+
             {/* Save */}
             <Button
               size="sm"
@@ -272,10 +329,11 @@ export default function Editor({ jobId, onBack }: EditorProps) {
                 events={events}
                 selectedId={selectedId}
                 onSelect={setSelectedId}
-                onUpdateEvent={handleUpdateEvent}
+                onPreviewEvent={handlePreviewEvent}
+                onCommitEdit={commitEdit}
                 onTimeUpdate={setCurrentTime}
                 onDurationChange={setDuration}
-                onVideoReady={(el) => { videoRef.current = el }}
+                onVideoReady={handleVideoReady}
               />
             )}
           </div>
@@ -318,7 +376,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               onSelectEvent={handleSelectFromList}
               onSeek={handleSeek}
               onAddEvent={handleAddEvent}
-              onUpdateEvent={handleUpdateEvent}
+              onPreviewEvent={handlePreviewEvent}
+              onCommitEdit={commitEdit}
             />
           </div>
         </div>

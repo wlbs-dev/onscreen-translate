@@ -1,19 +1,14 @@
 "use client"
 
 import { useRef, useEffect, useCallback } from "react"
-
-export interface OverlayEvent {
-  id: string; blockText: string; translation: string
-  bbox: [number, number, number, number]
-  bgColor: string; textColor: string; fontSize: number
-  startTime: number; endTime: number; frameIndex: number
-}
+import type { OverlayEvent } from "@/lib/editor/types"
 
 interface Props {
   events: OverlayEvent[]
   selectedId: string | null
   onSelect: (id: string | null) => void
-  onUpdateEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  onCommitEdit: () => void
   videoRect: { x: number; y: number; w: number; h: number }
   videoSize: { w: number; h: number }
 }
@@ -28,7 +23,7 @@ const HANDLE_SIZE = 9
 const EDGE_HIT    = 7
 
 export default function OverlayCanvas({
-  events, selectedId, onSelect, onUpdateEvent, videoRect, videoSize,
+  events, selectedId, onSelect, onPreviewEvent, onCommitEdit, videoRect, videoSize,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragState = useRef<{
@@ -195,10 +190,15 @@ export default function OverlayCanvas({
       case "resize-l":  bbox = [ox1+dx, oy1,    ox2,    oy2   ]; break
       case "resize-r":  bbox = [ox1,    oy1,    ox2+dx, oy2   ]; break
     }
-    onUpdateEvent(ds.id, { bbox })
-  }, [toVideo, getHit, onUpdateEvent])
+    onPreviewEvent(ds.id, { bbox })
+  }, [toVideo, getHit, onPreviewEvent])
 
-  const onMouseUp = useCallback(() => { dragState.current = null }, [])
+  // One history entry per drag: the moves above are previews, commit on release
+  const onMouseUp = useCallback(() => {
+    if (!dragState.current) return
+    dragState.current = null
+    onCommitEdit()
+  }, [onCommitEdit])
 
   // ── Render ────────────────────────────────────────────────────────────────
   // Canvas sits exactly over the video content area (no letterbox offset needed
