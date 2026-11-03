@@ -12,6 +12,8 @@ import { OverlayEvent } from "./VideoPlayer"
 
 interface SidebarProps {
   event: OverlayEvent | null
+  /** How many clips are selected; >1 shows a multi-select banner */
+  selectionCount?: number
   allEvents: OverlayEvent[]
   currentTime: number
   duration: number
@@ -127,8 +129,9 @@ function EventList({ events, currentTime, duration, onSelect, onAdd }: {
   )
 }
 
-function EventEditor({ event, onUpdate, onDelete, onClose }: {
+function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
   event: OverlayEvent
+  selectionCount: number
   onUpdate: (patch: Partial<OverlayEvent>) => void
   onDelete: () => void
   onClose: () => void
@@ -152,6 +155,13 @@ function EventEditor({ event, onUpdate, onDelete, onClose }: {
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+
+        {selectionCount > 1 && (
+          <div className="px-3 py-2 rounded-md border border-primary/30 bg-primary/5 text-[11px] text-muted-foreground leading-relaxed">
+            <span className="font-semibold text-primary">{selectionCount} boxes selected.</span>{" "}
+            Fields below edit the last one clicked; drag on the timeline moves all of them.
+          </div>
+        )}
 
         {/* Source text */}
         <div className="space-y-1.5">
@@ -233,7 +243,10 @@ function EventEditor({ event, onUpdate, onDelete, onClose }: {
                 <Input
                   type="number" step="0.1" min={0}
                   value={Number(event[key]).toFixed(2)}
-                  onChange={(e) => onUpdate({ [key]: parseFloat(e.target.value) })}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value)
+                    if (Number.isFinite(v)) onUpdate({ [key]: v })
+                  }}
                   className="text-xs h-8 font-mono"
                 />
               </div>
@@ -277,7 +290,7 @@ function EventEditor({ event, onUpdate, onDelete, onClose }: {
 
         {/* Delete */}
         <Button variant="destructive" size="sm" onClick={onDelete} className="w-full gap-1.5">
-          <Trash2 size={13} /> Delete box
+          <Trash2 size={13} /> {selectionCount > 1 ? `Delete ${selectionCount} boxes` : "Delete box"}
         </Button>
 
       </div>
@@ -286,13 +299,13 @@ function EventEditor({ event, onUpdate, onDelete, onClose }: {
 }
 
 export default function Sidebar({
-  event, allEvents, currentTime, duration,
+  event, selectionCount = 1, allEvents, currentTime, duration,
   onUpdate, onDelete, onClose, onSelectEvent, onAddEvent,
 }: SidebarProps) {
   return (
     <aside className="w-full flex flex-col overflow-hidden h-full bg-background">
       {event ? (
-        <EventEditor event={event} onUpdate={onUpdate} onDelete={onDelete} onClose={onClose} />
+        <EventEditor event={event} selectionCount={selectionCount} onUpdate={onUpdate} onDelete={onDelete} onClose={onClose} />
       ) : (
         <EventList
           events={allEvents} currentTime={currentTime} duration={duration}

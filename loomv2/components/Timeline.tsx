@@ -5,20 +5,42 @@ import { useRef, useCallback, useEffect, useState, useMemo } from "react"
 import { Plus } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { OverlayEvent } from "./VideoPlayer"
+import type { EventPatches } from "@/lib/editor/types"
+import { findSnap, SNAP_PX } from "@/lib/editor/snap"
+
+export type SelectMode = "replace" | "toggle"
 
 interface TimelineProps {
   events: OverlayEvent[]
   currentTime: number
   duration: number
-  selectedId: string | null
-  onSelectEvent: (id: string, seekTo: number) => void
+  selectedIds: string[]
+  onSelect: (id: string | null, mode?: SelectMode) => void
   onSeek: (t: number) => void
   onAddEvent: (event: OverlayEvent) => void
-  /** Transient update while dragging a clip (not recorded in history) */
-  onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
+  /** Transient update while dragging clips (not recorded in history) */
+  onPreviewEvents: (patches: EventPatches) => void
   /** Drag finished — record it as one history entry */
   onCommitEdit: () => void
 }
+
+interface DragState {
+  edge: "start" | "end" | "move"
+  /** Original timing of every clip being dragged */
+  orig: Record<string, { start: number; end: number }>
+  startX: number
+  pps: number
+  /** Snap targets in seconds: playhead + edges of clips not being dragged */
+  targets: number[]
+  moved: boolean
+  /** Plain click on a clip of a multi-selection selects just that clip on release */
+  collapseTo: string | null
+  /** Plain click (no drag) seeks to the clip start, as before */
+  seekTo: number | null
+}
+
+const DRAG_THRESHOLD_PX = 3
+const MIN_CLIP_S = 0.1
 
 const PALETTE = [
   "#3b82f6", "#ef4444", "#22c55e", "#f59e0b", "#a855f7",
@@ -65,15 +87,29 @@ function assignLanes(events: OverlayEvent[]): { event: OverlayEvent; lane: numbe
 }
 
 export default function Timeline({
-  events, currentTime, duration, selectedId,
-  onSelectEvent, onSeek, onAddEvent, onPreviewEvent, onCommitEdit,
+  events, currentTime, duration, selectedIds,
+  onSelect, onSeek, onAddEvent, onPreviewEvents, onCommitEdit,
 }: TimelineProps) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [zoom, setZoom] = useState(1)
-  const [dragging, setDragging] = useState<{
-    id: string; edge: "start" | "end" | "move"
-    origStart: number; origEnd: number; startPx: number
-  } | null>(null)
+  const [viewW, setViewW] = useState(0)
+  const [snapGuide, setSnapGuide] = useState<number | null>(null)
+  const dragRef = useRef<DragState | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
+
+  const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds])
+
+  // Track the visible width in state so px/sec can be computed during render
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    const obs = new ResizeObserver(() => setViewW(el.clientWidth))
+    obs.observe(el)
+    return () => obs.disconnect()
+  }, [])
+
+  // Drop window listeners if we unmount mid-drag
+  useEffect(() => () => detachRef.current?.(), [])
 
   const assigned = useMemo(() => assignLanes(events), [events])
   const laneCount = useMemo(
@@ -81,13 +117,9 @@ export default function Timeline({
     [assigned]
   )
 
-  const pxPerSec = useCallback(() => {
-    if (!scrollRef.current || duration === 0) return 1
-    return (scrollRef.current.clientWidth / duration) * zoom
-  }, [zoom, duration])
-
-  const toPx   = useCallback((t: number) => t * pxPerSec(), [pxPerSec])
-  const toTime = useCallback((px: number) => px / pxPerSec(), [pxPerSec])
+  const pps    = viewW > 0 && duration > 0 ? (viewW / duration) * zoom : 1
+  const toPx   = useCallback((t: number) => t * pps, [pps])
+  const toTime = useCallback((px: number) => px / pps, [pps])
 
   // Auto-scroll playhead into view
   useEffect(() => {
@@ -108,7 +140,6 @@ export default function Timeline({
 
   function rulerTicks() {
     if (duration === 0) return []
-    const pps = pxPerSec()
     const candidates = [0.5, 1, 2, 5, 10, 30, 60, 120, 300]
     const interval = candidates.find((c) => c * pps >= 80) ?? 300
     const ticks: number[] = []
@@ -116,46 +147,118 @@ export default function Timeline({
     return ticks.map((t) => ({ t, px: toPx(t), label: fmtTime(t) }))
   }
 
-  const totalW = Math.max(duration * pxPerSec() + 80, 400)
+  const totalW = Math.max(duration * pps + 80, 400)
   const totalH = RULER_H + laneCount * TRACK_H + 8
+
+  // ── Clip dragging ───────────────────────────────────────────────────────
+  // Listeners go on window so a drag keeps working outside the timeline.
+
+  const onDragMove = useCallback((e: MouseEvent) => {
+    const d = dragRef.current
+    if (!d) return
+    const dxPx = e.clientX - d.startX
+    if (!d.moved && Math.abs(dxPx) < DRAG_THRESHOLD_PX) return
+    d.moved = true
+
+    const snap      = !e.altKey
+    const threshold = SNAP_PX / d.pps
+    let dt          = dxPx / d.pps
+    let guide: number | null = null
+    const patches: EventPatches = {}
+    const ids = Object.keys(d.orig)
+
+    if (d.edge === "move") {
+      const minStart = Math.min(...ids.map((id) => d.orig[id].start))
+      const maxEnd   = Math.max(...ids.map((id) => d.orig[id].end))
+      const clampDt  = (v: number) => Math.max(-minStart, Math.min(duration - maxEnd, v))
+      dt = clampDt(dt)
+      if (snap) {
+        const edges = ids.flatMap((id) => [d.orig[id].start + dt, d.orig[id].end + dt])
+        const hit   = findSnap(edges, d.targets, threshold)
+        if (hit && clampDt(dt + hit.delta) === dt + hit.delta) { dt += hit.delta; guide = hit.target }
+      }
+      for (const id of ids)
+        patches[id] = { startTime: d.orig[id].start + dt, endTime: d.orig[id].end + dt }
+    } else {
+      const id = ids[0], o = d.orig[id]
+      let t = (d.edge === "start" ? o.start : o.end) + dt
+      if (snap) {
+        const hit = findSnap([t], d.targets, threshold)
+        if (hit) { t = hit.target; guide = hit.target }
+      }
+      if (d.edge === "start") {
+        const c = Math.max(0, Math.min(o.end - MIN_CLIP_S, t))
+        if (c !== t) guide = null
+        patches[id] = { startTime: c }
+      } else {
+        const c = Math.min(duration, Math.max(o.start + MIN_CLIP_S, t))
+        if (c !== t) guide = null
+        patches[id] = { endTime: c }
+      }
+    }
+    setSnapGuide(guide)
+    onPreviewEvents(patches)
+  }, [duration, onPreviewEvents])
+
+  const onDragEnd = useCallback(() => {
+    const d = dragRef.current
+    detachRef.current?.()
+    dragRef.current = null
+    setSnapGuide(null)
+    if (!d) return
+    if (d.moved) { onCommitEdit(); return }
+    if (d.collapseTo) onSelect(d.collapseTo)
+    if (d.seekTo !== null) onSeek(d.seekTo)
+  }, [onCommitEdit, onSelect, onSeek])
 
   const onClipMouseDown = useCallback((
     e: React.MouseEvent,
     ev: OverlayEvent,
     edge: "start" | "end" | "move"
   ) => {
+    if (e.button !== 0) return
     e.stopPropagation()
-    onSelectEvent(ev.id, ev.startTime)
-    setDragging({
-      id: ev.id, edge,
-      origStart: ev.startTime, origEnd: ev.endTime,
-      startPx: e.clientX,
-    })
-  }, [onSelectEvent])
+    e.preventDefault()
 
-  const onMouseMove = useCallback((e: React.MouseEvent) => {
-    if (!dragging) return
-    const dt = (e.clientX - dragging.startPx) / pxPerSec()
-    if (dragging.edge === "move") {
-      const len = dragging.origEnd - dragging.origStart
-      const newStart = Math.max(0, Math.min(duration - len, dragging.origStart + dt))
-      onPreviewEvent(dragging.id, { startTime: newStart, endTime: newStart + len })
-    } else if (dragging.edge === "start") {
-      onPreviewEvent(dragging.id, {
-        startTime: Math.max(0, Math.min(dragging.origEnd - 0.1, dragging.origStart + dt)),
-      })
+    const toggle = e.shiftKey || e.ctrlKey || e.metaKey
+    const wasSel = selectedSet.has(ev.id)
+    let group: string[]
+    if (toggle) {
+      onSelect(ev.id, "toggle")
+      if (wasSel) return                     // just removed it — nothing to drag
+      group = [...selectedIds, ev.id]
+    } else if (wasSel) {
+      group = selectedIds                    // keep the group so it can be dragged together
     } else {
-      onPreviewEvent(dragging.id, {
-        endTime: Math.min(duration, Math.max(dragging.origStart + 0.1, dragging.origEnd + dt)),
-      })
+      onSelect(ev.id)
+      group = [ev.id]
     }
-  }, [dragging, pxPerSec, duration, onPreviewEvent])
 
-  const onMouseUp = useCallback(() => {
-    if (!dragging) return
-    setDragging(null)
-    onCommitEdit()
-  }, [dragging, onCommitEdit])
+    // Resizing only ever affects the clip under the cursor
+    const ids = edge === "move" ? group : [ev.id]
+    const byId = new Map(events.map((x) => [x.id, x]))
+    const orig: DragState["orig"] = {}
+    for (const id of ids) {
+      const x = byId.get(id)
+      if (x) orig[id] = { start: x.startTime, end: x.endTime }
+    }
+    const targets = [currentTime]
+    for (const x of events) if (!orig[x.id]) targets.push(x.startTime, x.endTime)
+
+    dragRef.current = {
+      edge, orig, startX: e.clientX, pps, targets, moved: false,
+      collapseTo: !toggle && wasSel && selectedIds.length > 1 ? ev.id : null,
+      seekTo: toggle ? null : ev.startTime,
+    }
+    detachRef.current?.()
+    window.addEventListener("mousemove", onDragMove)
+    window.addEventListener("mouseup", onDragEnd)
+    detachRef.current = () => {
+      window.removeEventListener("mousemove", onDragMove)
+      window.removeEventListener("mouseup", onDragEnd)
+      detachRef.current = null
+    }
+  }, [events, selectedIds, selectedSet, currentTime, pps, onSelect, onDragMove, onDragEnd])
 
   const onRulerClick = useCallback((e: React.MouseEvent<SVGElement>) => {
     const rect = (e.currentTarget as SVGElement).getBoundingClientRect()
@@ -171,24 +274,20 @@ export default function Timeline({
       endTime: Math.min(duration, currentTime + 3), frameIndex: 0,
     }
     onAddEvent(newEvent)
-    onSelectEvent(newEvent.id, newEvent.startTime)
-  }, [currentTime, duration, onAddEvent, onSelectEvent])
+    onSelect(newEvent.id)
+  }, [currentTime, duration, onAddEvent, onSelect])
 
   const ticks      = rulerTicks()
   const playheadPx = toPx(currentTime)
 
   return (
-    <div
-      className="flex flex-col w-full h-full overflow-hidden select-none bg-background"
-      onMouseMove={onMouseMove}
-      onMouseUp={onMouseUp}
-      onMouseLeave={onMouseUp}
-    >
+    <div className="flex flex-col w-full h-full overflow-hidden select-none bg-background">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 shrink-0 h-9 border-b bg-muted/30">
         <span className="text-xs font-semibold text-primary">Timeline</span>
         <span className="text-xs text-muted-foreground">
           {laneCount} lane{laneCount !== 1 ? "s" : ""} · {events.length} tracks
+          {selectedIds.length > 1 && <> · <span className="text-primary">{selectedIds.length} selected</span></>}
         </span>
         <div className="flex-1" />
         <span className="text-xs text-muted-foreground">Zoom</span>
@@ -229,8 +328,17 @@ export default function Timeline({
             <polygon points={`${playheadPx - 5},0 ${playheadPx + 5},0 ${playheadPx},8`} fill="hsl(var(--primary))" />
           </svg>
 
-          {/* Lane rows + clips */}
-          <div style={{ position: "relative" }}>
+          {/* Snap guide */}
+          {snapGuide !== null && (
+            <div style={{
+              position: "absolute", top: 0, bottom: 0,
+              left: toPx(snapGuide), width: 1,
+              background: "#f59e0b", pointerEvents: "none", zIndex: 20,
+            }} />
+          )}
+
+          {/* Lane rows + clips — mousedown on empty space clears the selection */}
+          <div style={{ position: "relative" }} onMouseDown={(e) => { if (e.button === 0) onSelect(null) }}>
 
             {/* Playhead line */}
             <div style={{
@@ -261,7 +369,7 @@ export default function Timeline({
             {/* Empty state */}
             {events.length === 0 && (
               <div className="h-20 flex items-center justify-center text-xs text-muted-foreground">
-                No text boxes — click "Add box" to create one
+                No text boxes — click &quot;Add box&quot; to create one
               </div>
             )}
 
@@ -270,7 +378,7 @@ export default function Timeline({
               const color      = colorFor(ev.id)
               const clipLeft   = toPx(ev.startTime)
               const clipW      = Math.max(MIN_VIS_PX, toPx(ev.endTime) - clipLeft)
-              const isSelected = ev.id === selectedId
+              const isSelected = selectedSet.has(ev.id)
               const EDGE_W     = Math.min(8, clipW / 4)
               const top        = lane * TRACK_H
 

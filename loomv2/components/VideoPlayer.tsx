@@ -16,8 +16,8 @@ export interface VideoMeta {
 interface VideoPlayerProps {
   src: string
   events: OverlayEvent[]
-  selectedId: string | null
-  onSelect: (id: string | null) => void
+  selectedIds: string[]
+  onSelect: (id: string | null, mode?: "replace" | "toggle") => void
   /** Transient update while dragging a box (not recorded in history) */
   onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
   /** Drag finished — record it as one history entry */
@@ -30,7 +30,7 @@ interface VideoPlayerProps {
 const CONTROLS_H = 36 // height reserved for custom controls bar
 
 export default function VideoPlayer({
-  src, events, selectedId, onSelect, onPreviewEvent, onCommitEdit,
+  src, events, selectedIds, onSelect, onPreviewEvent, onCommitEdit,
   onTimeUpdate, onDurationChange, onVideoReady,
 }: VideoPlayerProps) {
   const videoRef     = useRef<HTMLVideoElement>(null)
@@ -175,7 +175,7 @@ return (
       {isReady && (
         <OverlayCanvas
           events={activeEvents}
-          selectedId={selectedId}
+          selectedIds={selectedIds}
           onSelect={onSelect}
           onPreviewEvent={onPreviewEvent}
           onCommitEdit={onCommitEdit}

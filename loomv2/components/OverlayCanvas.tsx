@@ -5,8 +5,9 @@ import type { OverlayEvent } from "@/lib/editor/types"
 
 interface Props {
   events: OverlayEvent[]
-  selectedId: string | null
-  onSelect: (id: string | null) => void
+  /** All selected ids; the last one is the primary and gets resize handles */
+  selectedIds: string[]
+  onSelect: (id: string | null, mode?: "replace" | "toggle") => void
   onPreviewEvent: (id: string, patch: Partial<OverlayEvent>) => void
   onCommitEdit: () => void
   videoRect: { x: number; y: number; w: number; h: number }
@@ -23,8 +24,9 @@ const HANDLE_SIZE = 9
 const EDGE_HIT    = 7
 
 export default function OverlayCanvas({
-  events, selectedId, onSelect, onPreviewEvent, onCommitEdit, videoRect, videoSize,
+  events, selectedIds, onSelect, onPreviewEvent, onCommitEdit, videoRect, videoSize,
 }: Props) {
+  const selectedId = selectedIds[selectedIds.length - 1] ?? null
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const dragState = useRef<{
     id: string; mode: DragMode
@@ -49,7 +51,8 @@ export default function OverlayCanvas({
       const [x1, y1, x2, y2] = event.bbox
       const sx = x1 * s, sy = y1 * s
       const sw = (x2 - x1) * s, sh = (y2 - y1) * s
-      const isSelected = event.id === selectedId
+      const isSelected = selectedIds.includes(event.id)
+      const isPrimary  = event.id === selectedId
 
       ctx.globalAlpha = 0.85
       ctx.fillStyle = event.bgColor || "#000000"
@@ -73,7 +76,7 @@ export default function OverlayCanvas({
         ctx.restore()
       }
 
-      if (isSelected) {
+      if (isPrimary) {
         const corners: [number, number][] = [
           [sx, sy], [sx + sw, sy], [sx, sy + sh], [sx + sw, sy + sh],
         ]
@@ -94,7 +97,7 @@ export default function OverlayCanvas({
         })
       }
     })
-  }, [events, selectedId, videoRect, scale])
+  }, [events, selectedIds, selectedId, videoRect, scale])
 
   // ── Canvas mouse → video-pixel coords ─────────────────────────────────────
   // Canvas is positioned at videoRect.x/y, so clientX - canvasBCR.left
@@ -157,10 +160,12 @@ export default function OverlayCanvas({
   const onMouseDown = useCallback((ev: React.MouseEvent) => {
     const { cx, cy } = toVideo(ev)
     const hit = getHit(cx, cy)
-    if (!hit) { onSelect(null); return }
+    const toggle = ev.shiftKey || ev.ctrlKey || ev.metaKey
+    if (!hit) { if (!toggle) onSelect(null); return }
     ev.preventDefault()
     const event = events.find((e) => e.id === hit.id)
     if (!event) return
+    if (toggle) { onSelect(hit.id, "toggle"); return }
     onSelect(hit.id)
     dragState.current = {
       id: hit.id, mode: hit.mode,

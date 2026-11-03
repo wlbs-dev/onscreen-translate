@@ -1,7 +1,7 @@
 // Editor.tsx
 "use client"
 
-import { useEffect, useEffectEvent, useRef, useState, useCallback } from "react"
+import { useEffect, useEffectEvent, useRef, useState, useCallback, useMemo } from "react"
 import { Save, Play, Download, Loader2, CheckCircle, AlertCircle, Film, Undo2, Redo2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
@@ -9,7 +9,7 @@ import { Separator } from "@/components/ui/separator"
 import Header from "./Header"
 import VideoPlayer, { OverlayEvent } from "./VideoPlayer"
 import Sidebar from "./Sidebar"
-import Timeline from "./Timeline"
+import Timeline, { SelectMode } from "./Timeline"
 import { useHistory } from "@/lib/editor/useHistory"
 import { applyPatches, EventPatches } from "@/lib/editor/types"
 import { isTypingTarget } from "@/lib/editor/shortcuts"
@@ -90,7 +90,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const history                             = useHistory<OverlayEvent[]>([], 100)
   const events                              = history.value
   const [builtFrom, setBuiltFrom]           = useState<{ frames: Frame[]; duration: number } | null>(null)
-  const [selectedId, setSelectedId]         = useState<string | null>(null)
+  const [selection, setSelection]           = useState<string[]>([])
   const [currentTime, setCurrentTime]       = useState(0)
   const [duration, setDuration]             = useState(0)
   const [isLoading, setIsLoading]           = useState(true)
@@ -159,11 +159,28 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const handleAddEvent = useCallback((event: OverlayEvent) =>
     setEvents((prev) => [...prev, event]), [setEvents])
 
+  // ── Selection ──────────────────────────────────────────────────────────
+  // Ids that no longer exist (e.g. after undoing an add) drop out here.
+  // The last id is the primary one shown in the sidebar.
+  const selectedIds = useMemo(() => {
+    const live = new Set(events.map((e) => e.id))
+    return selection.filter((id) => live.has(id))
+  }, [selection, events])
+  const selectedId    = selectedIds[selectedIds.length - 1] ?? null
   const selectedEvent = events.find((e) => e.id === selectedId) ?? null
 
+  const handleSelect = useCallback((id: string | null, mode: SelectMode = "replace") => {
+    if (id === null) { setSelection([]); return }
+    setSelection((prev) => mode === "toggle"
+      ? (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id])
+      : [id])
+  }, [])
+
   function deleteSelected() {
-    setEvents((prev) => prev.filter((e) => e.id !== selectedId))
-    setSelectedId(null)
+    if (selectedIds.length === 0) return
+    const ids = new Set(selectedIds)
+    setEvents((prev) => prev.filter((e) => !ids.has(e.id)))
+    setSelection([])
   }
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────
@@ -186,7 +203,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const handleVideoReady = useCallback((el: HTMLVideoElement) => { videoRef.current = el }, [])
 
   const handleSelectFromList = useCallback((id: string, seekTo: number) => {
-    setSelectedId(id)
+    setSelection([id])
     if (videoRef.current) videoRef.current.currentTime = seekTo
   }, [])
 
@@ -327,8 +344,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               <VideoPlayer
                 src={`/api/video${q}`}
                 events={events}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
+                selectedIds={selectedIds}
+                onSelect={handleSelect}
                 onPreviewEvent={handlePreviewEvent}
                 onCommitEdit={commitEdit}
                 onTimeUpdate={setCurrentTime}
@@ -372,11 +389,11 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               events={events}
               currentTime={currentTime}
               duration={duration}
-              selectedId={selectedId}
-              onSelectEvent={handleSelectFromList}
+              selectedIds={selectedIds}
+              onSelect={handleSelect}
               onSeek={handleSeek}
               onAddEvent={handleAddEvent}
-              onPreviewEvent={handlePreviewEvent}
+              onPreviewEvents={handlePreviewEvents}
               onCommitEdit={commitEdit}
             />
           </div>
@@ -387,12 +404,13 @@ export default function Editor({ jobId, onBack }: EditorProps) {
           {selectedEvent ? (
             <Sidebar
               event={selectedEvent}
+              selectionCount={selectedIds.length}
               allEvents={events}
               currentTime={currentTime}
               duration={duration}
               onUpdate={(patch) => selectedId && handleUpdateEvent(selectedId, patch)}
               onDelete={deleteSelected}
-              onClose={() => setSelectedId(null)}
+              onClose={() => setSelection([])}
               onSelectEvent={handleSelectFromList}
               onAddEvent={handleAddEvent}
             />
