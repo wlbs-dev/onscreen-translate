@@ -2,16 +2,20 @@
 "use client"
 
 import { ReactNode } from "react"
-import { ArrowLeft, Film } from "lucide-react"
+import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
+import Logo from "./Logo"
+import UserMenu from "./UserMenu"
 
 interface HeaderProps {
   onBack?: () => void
   rightContent?: ReactNode
+  /** Signed-in pages show the account menu (default); set false elsewhere. */
+  showUserMenu?: boolean
 }
 
-export default function Header({ onBack, rightContent }: HeaderProps) {
+export default function Header({ onBack, rightContent, showUserMenu = true }: HeaderProps) {
   return (
     <header className="flex items-center gap-3 px-4 h-12 bg-background border-b shrink-0">
       {onBack && (
@@ -22,14 +26,10 @@ export default function Header({ onBack, rightContent }: HeaderProps) {
           <Separator orientation="vertical" className="h-4" />
         </>
       )}
-      <div className="flex items-center gap-2">
-        <div className="w-6 h-6 rounded-md bg-primary flex items-center justify-center">
-          <Film size={13} className="text-primary-foreground" />
-        </div>
-        <span className="text-xs font-bold tracking-widest text-primary">TRANSEDIT</span>
-      </div>
+      <Logo />
       <div className="flex-1" />
       {rightContent && <div className="flex items-center gap-2">{rightContent}</div>}
+      {showUserMenu && <UserMenu />}
     </header>
   )
 }

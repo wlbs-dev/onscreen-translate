@@ -1,13 +1,20 @@
-// Start the production server on all interfaces — only with auth on.
-// The API runs scripts that spend your Sarvam/OpenAI credits, so a public
-// bind without APP_PASSWORD is refused unless ALLOW_NO_AUTH=1 (e.g. when
-// another auth layer sits in front).
+// Start the production server on all interfaces.
+// Sessions are signed with SESSION_SECRET; refuse to listen publicly without
+// one (a generated per-workspace secret is fine on localhost, not here).
 import { spawn } from "node:child_process"
+import path from "node:path"
 
-if (!process.env.APP_PASSWORD && process.env.ALLOW_NO_AUTH !== "1") {
+// Same env files the app reads (next.config.ts loads the repo-root .env)
+for (const f of [path.resolve("..", ".env"), path.resolve(".env")]) {
+  try { process.loadEnvFile(f) } catch {}
+}
+
+const secret = process.env.SESSION_SECRET?.trim() ?? ""
+if (secret.length < 32) {
   console.error(
-    "[start] Refusing to listen on 0.0.0.0 without APP_PASSWORD.\n" +
-    "        Set APP_PASSWORD, or ALLOW_NO_AUTH=1 if something else handles auth."
+    "[start] Refusing to listen on 0.0.0.0 without a SESSION_SECRET of at least 32 characters.\n" +
+    "        Generate one with:  node -e \"console.log(require('crypto').randomBytes(32).toString('base64url'))\"\n" +
+    "        and put SESSION_SECRET=... in the repo-root .env (./setup.sh does this for you)."
   )
   process.exit(1)
 }

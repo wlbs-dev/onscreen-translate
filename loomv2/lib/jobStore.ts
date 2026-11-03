@@ -24,6 +24,8 @@ export interface Job {
   sourceName?: string   // original upload filename
   targetLang?: string   // Sarvam code of the last translation, e.g. "mr-IN"
   aiMode?: boolean      // last translation used --ai
+  ownerId?: string      // user id of the uploader; legacy jobs without one are admin-only
+  durationSec?: number  // input video length (ffprobe), counted against the owner's quota
   ocr: JobStatus
   translate: JobStatus
   render: JobStatus
@@ -92,7 +94,10 @@ export function setActiveJobId(id: string): void {
   fs.writeFileSync(ACTIVE_FILE, id, "utf8")
 }
 
-export function createJob(id: string, meta: Partial<Pick<Job, "label" | "sourceName">> = {}): Job {
+export function createJob(
+  id: string,
+  meta: Partial<Pick<Job, "label" | "sourceName" | "ownerId">> = {}
+): Job {
   const job: Job = {
     id,
     createdAt: Date.now(),
@@ -112,7 +117,7 @@ export function getJob(id: string): Job | undefined {
 
 export function updateJob(
   id: string,
-  patch: Partial<Pick<Job, "label" | "targetLang" | "aiMode">>
+  patch: Partial<Pick<Job, "label" | "targetLang" | "aiMode" | "durationSec">>
 ): Job | undefined {
   const job = readJob(id)
   if (!job) return undefined

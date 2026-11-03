@@ -71,7 +71,7 @@ cd loomv2
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The server binds to `127.0.0.1` only (see [Security](#security)).
+Open [http://localhost:3000](http://localhost:3000) and click **Sign in → Create your account**: the first account needs no invite and becomes the admin (see [Accounts](#accounts)). The server binds to `127.0.0.1` only (see [Security](#security)).
 
 ---
 
@@ -184,9 +184,12 @@ onscreen-translate/
 │   │   ├── jobPaths.ts             # Workspace path helpers, jobId validation
 │   │   ├── runScript.ts            # Queued Python script runner with log streaming
 │   │   ├── languages.ts            # Target languages (mirror of scripts/languages.py)
-│   │   ├── auth.ts                 # Optional APP_PASSWORD session check
+│   │   ├── auth.ts                 # Signed session cookies (Web Crypto)
+│   │   ├── access.ts               # requireUser / requireAdmin / requireJobAccess for routes
+│   │   ├── users.ts, invites.ts    # Accounts and single-use invites (JSON in WORKSPACE)
+│   │   ├── usage.ts                # Append-only minutes ledger + monthly quota
 │   │   └── editor/                 # Undo history, font sizing, preview fonts
-│   ├── proxy.ts                    # Auth gate (Next 16's renamed middleware)
+│   ├── proxy.ts                    # Session + CSRF gate (Next 16's renamed middleware)
 │   └── instrumentation.ts          # Startup: recover interrupted jobs, sweep expired ones
 ├── scripts/
 │   ├── ocr_annotate.py
@@ -234,17 +237,31 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 
 ---
 
+## Accounts
+
+The app is invite-only by default. Signed-out visitors see the landing page at `/` (with a waitlist form); the app itself lives at `/app`.
+
+- **First account = admin.** While there are no users, `/signup` needs no invite and the account it creates is the admin.
+- **Invites.** On `/admin` the admin creates single-use invite codes (optionally locked to one email) and copies the `/signup?invite=CODE` link. `SIGNUP_MODE=open` lets anyone sign up instead.
+- **Quotas.** Each upload is measured with ffprobe and counts against the uploader's monthly minutes (calendar month, UTC; `DEFAULT_MONTHLY_MINUTES`, default 60; admins are unlimited). An upload that would go over is refused with a 402. Usage is an append-only ledger, so deleting a video doesn't give minutes back. The admin can change a user's quota or disable the account on `/admin`.
+- **Ownership.** Members see only their own videos; admins see everyone's. Jobs created before accounts existed (no owner) are visible to admins only.
+- **Feedback.** "Send feedback" in the account menu and "Report a problem with this video" on a video card land on `/admin` → Feedback.
+
+Everything is stored as JSON next to the jobs: `<WORKSPACE>/users.json`, `invites.json`, `usage.json`, `waitlist.json`, `feedback.json`. To reset a forgotten admin password, delete that user from `users.json` (or the whole file to start over with a new first admin).
+
 ## Running it for other people
 
 On any Linux box or VM with ffmpeg, Node and Python:
 
 ```bash
-./setup.sh
+./setup.sh                      # also writes a random SESSION_SECRET into .env
 cd loomv2 && npm run build
-APP_PASSWORD=choose-one WORKSPACE_DIR=/var/lib/onscreen-translate npm run start:public
+WORKSPACE_DIR=/var/lib/onscreen-translate npm run start:public
 ```
 
-`start:public` listens on all interfaces, so it **refuses to start without `APP_PASSWORD`** (set `ALLOW_NO_AUTH=1` only if another auth layer sits in front). Put HTTPS in front of it (Caddy, nginx, or a tunnel like Cloudflare Tunnel). `GET /api/health` is an unauthenticated liveness check. All settings are listed in `.env.example`.
+`start:public` listens on all interfaces, so it **refuses to start without a `SESSION_SECRET`** of at least 32 characters (in the environment or the repo-root `.env`, which the app also reads). Then open the site and create the admin account straight away — until someone does, anyone who reaches `/signup` can claim it. Put HTTPS in front of it (Caddy, nginx, or a tunnel like Cloudflare Tunnel); session cookies get the `Secure` flag when the request arrives over HTTPS or with `X-Forwarded-Proto: https`. `GET /api/health` is an unauthenticated liveness check. All settings are listed in `.env.example`.
+
+It's a single-process app: the job queue, rate limits and JSON stores assume one server instance.
 
 ## Tests
 
@@ -255,9 +272,15 @@ cd loomv2 && npx tsc --noEmit && npm run lint
 
 ## Security
 
-By default this is a local, single-user tool with **no authentication**: anyone who can reach the server can upload files, run OCR/translation (spending your Sarvam/OpenAI credits), and read or delete jobs. That's why `npm run dev` / `npm start` bind to `127.0.0.1`.
+Every page except the landing, sign-in and sign-up pages, and every API route except `health`, `login`, `logout`, `signup`, `waitlist` and `fonts`, needs a signed-in account.
 
-Setting `APP_PASSWORD` puts every page and API route behind a login (`loomv2/proxy.ts`); the session cookie is an HMAC of the password, so changing it signs everyone out. It is one shared password, not per-user accounts — fine for a team or a pilot customer, not for open sign-ups.
+- **Sessions** are an `ot_session` cookie (`HttpOnly`, `SameSite=Lax`, 14 days): `{uid, exp}` signed with HMAC-SHA256 using `SESSION_SECRET`. Without one (local dev), a random secret is generated once into `<WORKSPACE>/.session_secret`. Changing the secret signs everyone out.
+- **Two layers.** `loomv2/proxy.ts` rejects requests without a valid, unexpired cookie. Each route handler then calls `lib/access.ts` (`requireUser` / `requireAdmin` / `requireJobAccess`), which loads the user, rejects disabled accounts and checks job ownership. Someone else's job is a 404, not a 403. `/api/upload` and `/api/detections` skip the proxy, because Next truncates proxied request bodies at 10 MB, so those two routes rely on their own checks.
+- **Passwords** are scrypt hashes with a per-user salt, compared in constant time; hashes never leave the server.
+- **CSRF.** State-changing requests whose `Sec-Fetch-Site` / `Origin` isn't this site get a 403, both in the proxy and in the route helpers.
+- **Rate limits** (in memory, per process): sign-in per IP + email, per IP and per email; sign-up and waitlist per IP; feedback per user. Behind a reverse proxy, make sure it sets `X-Forwarded-For`.
+
+`npm run dev` / `npm start` still bind to `127.0.0.1`; use `start:public` to listen on a network.
 
 ---
 
