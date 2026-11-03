@@ -1,8 +1,11 @@
 python-dotenv
-# ocr_annotate.py uses the 2.x API (use_gpu / show_log / cls=), removed in PaddleOCR 3
-paddleocr>=2.7,<3
-paddlepaddle
-opencv-python
-pillow
+# OCR: PP-OCR models exported to ONNX, bundled in the wheel (no model download)
+rapidocr>=3.10,<4
+onnxruntime
+# rapidocr depends on the headless build; installing opencv-python as well
+# gives two conflicting copies of cv2
+opencv-python-headless
 numpy
-playwright
+# Overlay text is drawn with Pillow; it must be built with raqm (HarfBuzz +
+# FriBiDi) to shape Indic scripts. The PyPI wheels include it.
+pillow>=10

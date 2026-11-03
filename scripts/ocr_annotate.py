@@ -1,20 +1,17 @@
 #!/usr/bin/env python3
 """
-ocr_annotate.py — Local OCR annotation tool (PaddleOCR edition)
+ocr_annotate.py — Local OCR annotation tool (RapidOCR / ONNX Runtime)
 
 Extracts frames at 2fps, skips frames that are visually identical to the
-last OCR'd frame (static slides), runs PaddleOCR in parallel across CPU cores,
-groups words into line-aware blocks, draws red outlines around blocks +
-blue outlines around words, saves annotated JPGs and ocr_detections.json.
+last OCR'd frame (static slides), runs RapidOCR (PP-OCR models exported to
+ONNX, bundled in the pip wheel — nothing is downloaded at runtime) in
+parallel across CPU cores, groups words into line-aware blocks, draws red
+outlines around blocks + blue outlines around words, saves annotated JPGs
+and ocr_detections.json.
 
 Usage:
     python ocr_annotate.py --input video.mp4 --output-dir annotated/
-    python ocr_annotate.py --input video.mp4 --output-dir annotated/ --lang japan
     python ocr_annotate.py --input video.mp4 --output-dir annotated/ --workers 4
-
-Supported --lang values (common):
-    en, japan, ch, korean, french, german, arabic, latin, cyrillic ...
-    Full list: https://paddlepaddle.github.io/PaddleOCR/latest/en/ppocr/blog/multi_languages.html
 """
 
 import argparse
@@ -29,6 +26,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
+
+from colors import border_median_rgb, rgb_to_hex
 
 
 def setup_logging(verbose: bool) -> None:
@@ -48,10 +47,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--input",      required=True)
     p.add_argument("--output-dir", required=True)
     p.add_argument("--fps",        type=float, default=2.0)
-    p.add_argument("--lang",       type=str,   default="en",
-                   help="PaddleOCR language code (default: en)")
     p.add_argument("--workers",    type=int,   default=None,
-                   help="Parallel OCR workers (default: cpu_count - 1)")
+                   help="Parallel OCR processes (default: cpu_count / 2, max 4)")
     p.add_argument("--no-dedupe",  action="store_true",
                    help="OCR every frame, even ones identical to the previous OCR'd frame")
     p.add_argument("--verbose",    action="store_true")
@@ -129,22 +126,27 @@ def plan_ocr(frames: list[tuple[float, str]], dedupe: bool) -> list[int]:
 
 _reader = None
 
-def _init_worker(lang: str) -> None:
+def _init_worker(threads: int) -> None:
     global _reader
-    from paddleocr import PaddleOCR
-    _reader = PaddleOCR(
-        use_angle_cls=False,
-        lang=lang,
-        use_gpu=False,
-        show_log=False,
-    )
+    from rapidocr import RapidOCR
+    _reader = RapidOCR(params={
+        "Global.log_level": "warning",
+        # Rotated text is rare in video overlays; skipping the angle
+        # classifier saves a model pass per line
+        "Global.use_cls": False,
+        # Each process gets a share of the cores instead of all of them
+        "EngineConfig.onnxruntime.intra_op_num_threads": threads,
+        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+    })
 
 def _ocr_frame_worker(args):
     frame_index, ts, frame_path = args
-    raw = _reader.ocr(frame_path, cls=False)
+    res = _reader(frame_path)
+    lines = []
+    if res.boxes is not None and res.txts:
+        lines = zip(res.boxes.tolist(), res.txts, [float(s) for s in res.scores])
     words = []
-    for line in (raw[0] or []):
-        quad, (text, conf) = line
+    for quad, text, conf in lines:
         text = text.strip()
         if not text:
             continue
@@ -261,9 +263,9 @@ def main() -> None:
     if not frames:
         sys.exit("[ERROR] No frames extracted.")
 
-    n_workers = args.workers or max(1, cpu_count() - 1)
-    logger.info(f"Running PaddleOCR on {len(frames)} frames with {n_workers} workers "
-                f"(lang={args.lang})...")
+    cpus = cpu_count()
+    n_workers = max(1, args.workers or min(4, cpus // 2))
+    threads = max(1, cpus // n_workers)
 
     source = plan_ocr(frames, dedupe=not args.no_dedupe)
     key_frames = sorted(set(source))
@@ -271,20 +273,23 @@ def main() -> None:
     if skipped:
         logger.info(f"Skipping {skipped}/{len(frames)} frames identical to an earlier frame")
     tasks = [(i, frames[i][0], frames[i][1]) for i in key_frames]
+    n_workers = min(n_workers, len(tasks))
+    logger.info(f"Running RapidOCR on {len(tasks)} frames with {n_workers} process(es) "
+                f"x {threads} thread(s)...")
 
-    # Load the model once in this process first: it downloads weights on first
-    # use, and if that (or the import) fails inside a Pool initializer the pool
-    # respawns workers forever instead of raising, so the job never finishes.
+    # Load the model once in this process first: if the import or model load
+    # fails inside a Pool initializer, the pool respawns workers forever
+    # instead of raising, so the job would never finish.
     try:
-        _init_worker(args.lang)
+        _init_worker(threads)
     except Exception as e:
-        sys.exit(f"[ERROR] Could not load PaddleOCR (lang={args.lang}): {e}")
+        sys.exit(f"[ERROR] Could not load RapidOCR: {e}")
 
     words_by_frame: dict[int, list[dict]] = {}
     with Pool(
         processes=n_workers,
         initializer=_init_worker,
-        initargs=(args.lang,),
+        initargs=(threads,),
     ) as pool:
         for n, (frame_index, _, _, words) in enumerate(
             pool.imap_unordered(_ocr_frame_worker, tasks), start=1
@@ -299,9 +304,11 @@ def main() -> None:
 
     logger.info("OCR done — annotating frames and writing JSON...")
 
+    import cv2
     all_results = []
     for frame_index, ts, frame_path, words in ocr_results:
         blocks = group_into_lines(words)
+        raw_img = cv2.imread(frame_path)  # untouched ffmpeg frame
 
         out_path = os.path.join(annotated_frames_dir, f"frame_{frame_index:05d}_t{ts:.3f}.jpg")
         annotate_frame(frame_path, out_path, blocks, timestamp=ts)
@@ -311,10 +318,14 @@ def main() -> None:
             saved_words = [w for w in block["words"] if w["conf"] > 0.1]
             if not saved_words:
                 continue
+            bg = border_median_rgb(raw_img, block["bbox"])
             saved_blocks.append({
                 "text":  " ".join(w["text"] for w in saved_words),
                 "bbox":  block["bbox"],
                 "conf":  block["conf"],
+                # Sampled cover-patch colour for the editor preview. Not a user
+                # choice: the renderer only treats `bgColor` as an override.
+                **({"autoBgColor": rgb_to_hex(bg)} if bg else {}),
                 "words": [{"text": w["text"], "bbox": w["bbox"], "conf": w["conf"]} for w in saved_words],
             })
 

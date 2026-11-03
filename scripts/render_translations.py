@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """
 render_translations.py — Render output video from translated_detections.json
+
+Each overlay (cover patch + translated text) is drawn once as a PNG with
+Pillow + raqm (HarfBuzz shaping, so Indic conjuncts and matras are correct),
+then ffmpeg composites all of them onto the video in a single encode pass
+with timed `overlay` filters — no browser, no per-frame Python loop.
 """
 
 import argparse
-import html
 import json
 import logging
 import os
@@ -13,12 +17,12 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
 
 from languages import all_font_files
+from colors import HEX_COLOR_RE, auto_text_rgb, border_median_rgb, hex_to_rgb
 
 def setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -32,12 +36,14 @@ def setup_logging(verbose: bool) -> None:
 logger = logging.getLogger(__name__)
 
 FONT_DIR        = "assets"
+# Padding around overlay text, matching the editor preview (OverlayCanvas.tsx):
+# 4px each side inside the patch, plus 10px slack when the patch grows
+TEXT_PAD_X      = 4
+PATCH_SLACK     = 10
 FONT_SIZE_MIN   = 14
 FONT_SIZE_MAX   = 72
 FONT_SIZE_RATIO = 0.55
 
-# Colors come from the editable detections JSON and are interpolated into HTML
-HEX_COLOR_RE    = re.compile(r"^#[0-9a-fA-F]{6}$")
 
 
 def parse_args() -> argparse.Namespace:
@@ -143,7 +149,8 @@ def build_timeline(detections: list[dict], video_duration: float,
                     block.get("translation") or block.get("marathi_text") or ""
                 )
                 active[key]["bg_color"]   = block.get("bgColor", "")
-                active[key]["text_color"] = block.get("textColor", "#ffffff")
+                active[key]["text_color"] = block.get("textColor", "")
+                active[key]["auto_bg"]    = block.get("autoBgColor", "")
                 active[key]["font_size"]  = block.get("fontSize", 0)
             else:
                 active[key] = {
@@ -156,8 +163,10 @@ def build_timeline(detections: list[dict], video_duration: float,
                     ),
                     "frame_path":    raw_frame_path(frame.get("frame_path", ""),
                                                     frame.get("frame_index")),
+                    # Empty = automatic (sampled background, contrasting text)
                     "bg_color":      block.get("bgColor", ""),
-                    "text_color":    block.get("textColor", "#ffffff"),
+                    "text_color":    block.get("textColor", ""),
+                    "auto_bg":       block.get("autoBgColor", ""),
                     "font_size":     block.get("fontSize", 0),
                 }
 
@@ -185,24 +194,116 @@ def build_timeline(detections: list[dict], video_duration: float,
     return events
 
 
-# ── Fonts ─────────────────────────────────────────────────────────────────────
+# ── Fonts and text shaping ────────────────────────────────────────────────────
+#
+# Pillow has no per-glyph font fallback, so text is split into runs by Unicode
+# script and each run is drawn with that script's Noto font. Latin letters,
+# digits, punctuation and spaces use the Devanagari font (it includes Latin),
+# mirroring the editor preview's font stack. Combining marks, ZWJ/ZWNJ and
+# the danda stay in whatever run they appear in so shaping isn't broken.
 
-def font_css() -> tuple[str, str]:
-    """
-    @font-face rules for every bundled Indic font plus a font-family stack.
-    Chromium falls back glyph-by-glyph, so any supported script (and Latin
-    proper nouns mixed in) renders without knowing the target language.
-    """
-    faces, families = [], []
-    for i, fname in enumerate(all_font_files()):
-        path = Path(FONT_DIR, fname).resolve()
-        if not path.is_file():
-            logger.warning(f"Font missing: {path}")
-            continue
-        family = f"Indic{i}"
-        faces.append(f"@font-face {{ font-family: '{family}'; src: url('{path.as_uri()}'); }}")
-        families.append(f"'{family}'")
-    return "\n".join(faces), ", ".join(families + ["sans-serif"])
+SCRIPT_RANGES: list[tuple[int, int, str]] = [
+    (0x0900, 0x097F, "NotoSansDevanagari-Regular.ttf"),
+    (0xA8E0, 0xA8FF, "NotoSansDevanagari-Regular.ttf"),
+    (0x1CD0, 0x1CFF, "NotoSansDevanagari-Regular.ttf"),
+    (0x0980, 0x09FF, "NotoSansBengali-Regular.ttf"),
+    (0x0A00, 0x0A7F, "NotoSansGurmukhi-Regular.ttf"),
+    (0x0A80, 0x0AFF, "NotoSansGujarati-Regular.ttf"),
+    (0x0B00, 0x0B7F, "NotoSansOriya-Regular.ttf"),
+    (0x0B80, 0x0BFF, "NotoSansTamil-Regular.ttf"),
+    (0x0C00, 0x0C7F, "NotoSansTelugu-Regular.ttf"),
+    (0x0C80, 0x0CFF, "NotoSansKannada-Regular.ttf"),
+    (0x0D00, 0x0D7F, "NotoSansMalayalam-Regular.ttf"),
+]
+BASE_FONT = "NotoSansDevanagari-Regular.ttf"
+# Characters that join whichever run they follow
+STICKY = {0x200C, 0x200D, 0x0964, 0x0965}
+
+
+def font_file_for(ch: str) -> str | None:
+    """Font for an Indic character, or None for script-neutral characters."""
+    cp = ord(ch)
+    if cp in STICKY:
+        return None
+    for lo, hi, font in SCRIPT_RANGES:
+        if lo <= cp <= hi:
+            return font
+    return None
+
+
+def script_runs(text: str) -> list[tuple[str, str]]:
+    """Split text into (font_file, run_text) pieces."""
+    runs: list[list] = []
+    for ch in text:
+        font = font_file_for(ch)
+        if font is None:
+            # Spaces/marks/joiners stay with the current run; other neutral
+            # characters (Latin, digits, punctuation) go to the base font
+            if runs and (ch.isspace() or ord(ch) in STICKY or not ch.isprintable()):
+                runs[-1][1] += ch
+                continue
+            font = BASE_FONT
+        if runs and runs[-1][0] == font:
+            runs[-1][1] += ch
+        else:
+            runs.append([font, ch])
+    return [(f, t) for f, t in runs]
+
+
+_font_cache: dict[tuple[str, int], "ImageFont.FreeTypeFont"] = {}
+
+
+def load_font(font_file: str, size: int):
+    from PIL import ImageFont
+    key = (font_file, size)
+    if key not in _font_cache:
+        _font_cache[key] = ImageFont.truetype(
+            str(Path(FONT_DIR, font_file)), size, layout_engine=ImageFont.Layout.RAQM
+        )
+    return _font_cache[key]
+
+
+def check_text_shaping() -> None:
+    """Indic scripts render as broken glyph soup without raqm; fail loudly."""
+    from PIL import features
+    if not features.check("raqm"):
+        sys.exit(
+            "[ERROR] Pillow was built without raqm (HarfBuzz/FriBiDi), so Indic text "
+            "would be shaped incorrectly. Install Pillow from the PyPI wheel "
+            "(pip install --force-reinstall pillow), which includes it."
+        )
+    missing = [f for f in all_font_files() if not Path(FONT_DIR, f).is_file()]
+    if missing:
+        sys.exit(f"[ERROR] Missing fonts in {FONT_DIR}/: {', '.join(missing)}")
+
+
+def measure_text(text: str, size: int) -> tuple[float, int, int]:
+    """(advance width, max ascent, max descent) across the text's runs."""
+    width, asc, desc = 0.0, 0, 0
+    for font_file, run in script_runs(text):
+        font = load_font(font_file, size)
+        width += font.getlength(run)
+        a, d = font.getmetrics()
+        asc, desc = max(asc, a), max(desc, d)
+    return width, asc, desc
+
+
+def draw_overlay(text: str, width: int, height: int, font_size: int,
+                 bg_rgb: tuple[int, int, int], text_color: tuple[int, int, int]):
+    """Opaque cover patch with the text left-aligned and vertically centred."""
+    from PIL import Image, ImageDraw
+    img = Image.new("RGB", (width, height), bg_rgb)
+    if not text.strip():
+        return img
+    draw = ImageDraw.Draw(img)
+    _, asc, desc = measure_text(text, font_size)
+    baseline = (height - (asc + desc)) / 2 + asc
+    x = float(TEXT_PAD_X)
+    for font_file, run in script_runs(text):
+        font = load_font(font_file, font_size)
+        draw.text((x, baseline), run, font=font, fill=text_color, anchor="ls")
+        x += font.getlength(run)
+    return img
 
 
 # ── Background color sampling ─────────────────────────────────────────────────
@@ -221,237 +322,164 @@ def raw_frame_path(frame_path: str, frame_index) -> str:
     return frame_path
 
 
-def hex_to_rgb(hex_color: str) -> list[int]:
-    hex_color = hex_color.strip().lstrip("#")
-    if len(hex_color) == 6:
-        return [int(hex_color[i:i+2], 16) for i in (0, 2, 4)]
-    return [0, 0, 0]
-
-
-def sample_bg_color(frame_path: str, bbox: list[int], saved_hex: str = "") -> list[int]:
+def sample_bg_color(frame_path: str, bbox: list[int], saved_hex: str = "",
+                    auto_hex: str = "") -> tuple[int, int, int]:
+    """
+    Cover-patch colour: the user's bgColor, else sampled around the (possibly
+    moved) box on the raw frame, else OCR's autoBgColor, else black.
+    """
     if saved_hex and HEX_COLOR_RE.match(saved_hex):
         return hex_to_rgb(saved_hex)
-
-    if not frame_path or not os.path.isfile(frame_path):
-        return [0, 0, 0]
-
-    try:
+    if frame_path and os.path.isfile(frame_path):
         import cv2
-
-        img = cv2.imread(frame_path)
-        if img is None:
-            return [0, 0, 0]
-
-        x1, y1, x2, y2 = bbox
-        h, w = img.shape[:2]
-        border = 8
-        regions = []
-
-        if y1 - border >= 0:
-            regions.append(img[max(0, y1 - border):y1, x1:x2])
-        if y2 + border <= h:
-            regions.append(img[y2:min(h, y2 + border), x1:x2])
-        if x1 - border >= 0:
-            regions.append(img[y1:y2, max(0, x1 - border):x1])
-        if x2 + border <= w:
-            regions.append(img[y1:y2, x2:min(w, x2 + border)])
-
-        if not regions:
-            return [0, 0, 0]
-
-        sample = np.concatenate([r.reshape(-1, 3) for r in regions if r.size > 0])
-        median = np.median(sample, axis=0).astype(int)
-        return [int(median[2]), int(median[1]), int(median[0])]  # BGR → RGB
-    except Exception:
-        return [0, 0, 0]
+        rgb = border_median_rgb(cv2.imread(frame_path), bbox)
+        if rgb:
+            return rgb
+    if auto_hex and HEX_COLOR_RE.match(auto_hex):
+        return hex_to_rgb(auto_hex)
+    return 0, 0, 0
 
 
 # ── Video render ──────────────────────────────────────────────────────────────
 
-def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
+def probe_video(path: str) -> dict:
+    """Width, height, fps and duration of the first video stream via ffprobe."""
+    out = subprocess.run([
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height,avg_frame_rate,nb_frames:format=duration",
+        "-of", "json", path,
+    ], capture_output=True, text=True, check=True)
+    info = json.loads(out.stdout)
+    stream = info["streams"][0]
+    num, _, den = stream.get("avg_frame_rate", "25/1").partition("/")
+    fps = float(num) / float(den or 1) if float(den or 1) else 25.0
+    duration = float(info.get("format", {}).get("duration") or 0)
+    frames = int(stream.get("nb_frames") or 0) or int(round(duration * fps))
+    return {"w": int(stream["width"]), "h": int(stream["height"]),
+            "fps": fps, "duration": duration, "frames": frames}
 
+
+def ffmpeg_major_version() -> int:
+    try:
+        out = subprocess.run(["ffmpeg", "-version"], capture_output=True, text=True).stdout
+        m = re.search(r"ffmpeg version n?(\d+)", out)
+        return int(m.group(1)) if m else 6
+    except Exception:
+        return 6
+
+
+def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> list[dict]:
+    """Draw one PNG per event; return [{png, x, y, start, end}]."""
+    overlays = []
+    for i, event in enumerate(events):
+        x1, y1, x2, y2 = event["bbox_px"]
+        # Clamp to video bounds (safety net — should already be clean)
+        x1 = max(0, min(x1, vid_w - 1))
+        y1 = max(0, min(y1, vid_h - 1))
+        x2 = max(x1 + 1, min(x2, vid_w))
+        y2 = max(y1 + 1, min(y2, vid_h))
+        bw, bh = x2 - x1, y2 - y1
+
+        r, g, b = sample_bg_color(event.get("frame_path", ""), [x1, y1, x2, y2],
+                                  event.get("bg_color", ""), event.get("auto_bg", ""))
+
+        saved_text_color = event.get("text_color", "")
+        if saved_text_color and HEX_COLOR_RE.match(saved_text_color):
+            text_rgb = hex_to_rgb(saved_text_color)
+        else:
+            text_rgb = auto_text_rgb((r, g, b))
+
+        saved_fs = event.get("font_size", 0)
+        if saved_fs and saved_fs > 0:
+            font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(saved_fs)))
+        else:
+            font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(bh * FONT_SIZE_RATIO)))
+
+        text = event["translated_text"]
+        width = bw
+        if text.strip():
+            natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK
+            width = min(max(bw, natural_w), vid_w - x1)
+
+        png = os.path.join(out_dir, f"overlay_{i:04d}.png")
+        draw_overlay(text, width, bh, font_size, (r, g, b), text_rgb).save(png)
+        overlays.append({"png": png, "x": x1, "y": y1,
+                         "start": event["start_time"], "end": event["end_time"]})
+        label = f"'{text[:30]}'" if text.strip() else "(blank cover)"
+        logger.info(f"  [{i+1}/{len(events)}] {label} at ({x1},{y1}) {width}x{bh} "
+                    f"{event['start_time']:.2f}s → {event['end_time']:.2f}s")
+    return overlays
+
+
+def render_video(input_path: str, output_path: str, events: list[dict], meta: dict) -> None:
     if not events:
         logger.warning("No overlay events — copying input unchanged.")
-        subprocess.run(["ffmpeg", "-i", input_path, "-c", "copy", output_path, "-y"], check=True)
+        subprocess.run(["ffmpeg", "-v", "error", "-i", input_path, "-c", "copy", output_path, "-y"],
+                       check=True)
         return
 
-    import cv2
-    from PIL import Image
+    check_text_shaping()
+    vid_w, vid_h, total = meta["w"], meta["h"], max(1, meta["frames"])
+    logger.info(f"Video: {vid_w}x{vid_h}, {total} frames @ {meta['fps']:.2f}fps")
 
-    cap          = cv2.VideoCapture(input_path)
-    fps          = cap.get(cv2.CAP_PROP_FPS)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    vid_w        = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vid_h        = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
+    with tempfile.TemporaryDirectory(prefix="overlays_") as tmp:
+        logger.info(f"Drawing {len(events)} overlays...")
+        overlays = build_overlays(events, vid_w, vid_h, tmp)
 
-    logger.info(f"Video: {vid_w}x{vid_h}, {total_frames} frames @ {fps}fps")
-    for ev in events[:3]:
-        logger.info(f"bbox_px={ev['bbox_px']} start={ev['start_time']:.2f}")
-
-    overlay_dir   = tempfile.mkdtemp(prefix="overlays_")
-    overlay_cache = {}
-
-    logger.info(f"Pre-rendering {len(events)} overlays with Playwright...")
-    from playwright.sync_api import sync_playwright
-
-    font_faces, font_stack = font_css()
-
-    with sync_playwright() as p:
-        # CHROMIUM_PATH lets Docker images / CI reuse a system Chromium
-        # instead of running `playwright install chromium`
-        chromium_path = os.environ.get("CHROMIUM_PATH") or None
-        browser = p.chromium.launch(executable_path=chromium_path)
-
-        for i, event in enumerate(events):
-            x1, y1, x2, y2 = event["bbox_px"]
-
-            # Clamp to video bounds (safety net — should already be clean)
-            x1 = max(0, min(x1, vid_w - 1))
-            y1 = max(0, min(y1, vid_h - 1))
-            x2 = max(x1 + 1, min(x2, vid_w))
-            y2 = max(y1 + 1, min(y2, vid_h))
-
-            bw = x2 - x1
-            bh = y2 - y1
-
-            bg = sample_bg_color(
-                event.get("frame_path", ""),
-                [x1, y1, x2, y2],
-                event.get("bg_color", ""),
+        # One timed overlay filter per event, chained. Still images repeat
+        # their single frame (eof_action=repeat), so enable= alone decides
+        # when each is visible: [start, end) like the editor timeline.
+        # Composite in 4:4:4: overlaying RGB patches onto 4:2:0 video at odd
+        # x/width leaves a discoloured chroma column at the patch edge.
+        # Convert down to yuv420p once at the end.
+        chain, prev = ["[0:v]format=yuv444p[v0]"], "v0"
+        for n, ov in enumerate(overlays, start=1):
+            out = f"v{n}"
+            chain.append(
+                f"[{prev}][{n}:v]overlay=x={ov['x']}:y={ov['y']}:format=yuv444:"
+                f"enable='gte(t,{ov['start']:.3f})*lt(t,{ov['end']:.3f})'[{out}]"
             )
-            r, g, b = bg
-            bg_hex  = f"#{r:02x}{g:02x}{b:02x}"
+            prev = out
+        chain.append(f"[{prev}]format=yuv420p[vout]")
+        graph_path = os.path.join(tmp, "filter_graph.txt")
+        Path(graph_path).write_text(";\n".join(chain), encoding="utf-8")
 
-            saved_text_color = event.get("text_color", "")
-            if saved_text_color and HEX_COLOR_RE.match(saved_text_color):
-                text_color = saved_text_color
-            else:
-                text_color = "white" if (0.299*r + 0.587*g + 0.114*b) < 128 else "black"
-
-            saved_fs = event.get("font_size", 0)
-            if saved_fs and saved_fs > 0:
-                font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, saved_fs))
-            else:
-                font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(bh * FONT_SIZE_RATIO)))
-
-            png_path = os.path.join(overlay_dir, f"overlay_{i:04d}.png")
-
-            if not event["translated_text"].strip():
-                from PIL import Image as PILImage
-                blank = PILImage.new("RGB", (bw, bh), (r, g, b))
-                blank.save(png_path)
-                overlay_cache[i] = (blank, x1, y1)
-                logger.info(f"  [{i+1}/{len(events)}] (blank cover) {bw}x{bh} at ({x1},{y1})")
-            else:
-                safe_text = html.escape(event["translated_text"])
-                measure_html = f"""<html><head><style>
-                    {font_faces}
-                    * {{ margin: 0; padding: 0; }}
-                    body {{ background: {bg_hex}; }}
-                    span {{ font-family: {font_stack};
-                            font-size: {font_size}px; color: {text_color};
-                            white-space: nowrap; display: inline-block; padding: 2px 4px; }}
-                </style></head><body><span id="t">{safe_text}</span></body></html>"""
-
-                page = browser.new_page(viewport={"width": 2000, "height": bh + 20})
-                page.set_content(measure_html)
-                page.wait_for_load_state("networkidle")
-                natural_w = int(
-                    page.evaluate("document.getElementById('t').getBoundingClientRect().width")
-                ) + 10
-                page.close()
-
-                final_w = max(bw, natural_w)
-                final_w = min(final_w, vid_w - x1)
-
-                render_html = f"""<html><head><style>
-                    {font_faces}
-                    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-                    body {{ width: {final_w}px; height: {bh}px; background: {bg_hex};
-                            display: flex; align-items: center;
-                            justify-content: flex-start; overflow: hidden; }}
-                    span {{ font-family: {font_stack};
-                            font-size: {font_size}px; color: {text_color};
-                            text-align: left; padding: 2px 4px; white-space: nowrap; }}
-                </style></head><body><span>{safe_text}</span></body></html>"""
-
-                page = browser.new_page(viewport={"width": final_w, "height": bh})
-                page.set_content(render_html)
-                page.wait_for_load_state("networkidle")
-                page.screenshot(path=png_path)
-                page.close()
-
-                overlay_cache[i] = (Image.open(png_path).convert("RGB"), x1, y1)
-                logger.info(
-                    f"  [{i+1}/{len(events)}] '{event['translated_text'][:30]}' "
-                    f"bbox=({x1},{y1})→({x2},{y2}) box={bw}x{bh} → {final_w}x{bh}"
-                )
-
-        browser.close()
-
-    frames_dir = tempfile.mkdtemp(prefix="render_frames_")
-    logger.info(f"Compositing overlays onto {total_frames} frames...")
-
-    cap       = cv2.VideoCapture(input_path)
-    frame_idx = 0
-
-    while True:
-        ret, frame_bgr = cap.read()
-        if not ret:
-            break
-
-        timestamp = frame_idx / fps
-        active = [
-            (i, e) for i, e in enumerate(events)
-            if e["start_time"] <= timestamp < e["end_time"]
+        graph_flag = ["-/filter_complex", graph_path] if ffmpeg_major_version() >= 7 \
+            else ["-filter_complex_script", graph_path]
+        cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
+               "-i", input_path]
+        for ov in overlays:
+            cmd += ["-i", ov["png"]]
+        cmd += graph_flag + [
+            "-map", "[vout]", "-map", "0:a?",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-c:a", "copy", "-movflags", "+faststart",
+            output_path,
         ]
 
-        if active:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            pil_frame = Image.fromarray(frame_rgb)
-
-            for i, event in active:
-                overlay_img, ox, oy = overlay_cache[i]
-                pil_frame.paste(overlay_img, (ox, oy))
-
-            frame_bgr = cv2.cvtColor(np.array(pil_frame), cv2.COLOR_RGB2BGR)
-
-        out_frame = os.path.join(frames_dir, f"frame_{frame_idx:06d}.jpg")
-        cv2.imwrite(out_frame, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
-        frame_idx += 1
-
-        if frame_idx % 100 == 0:
-            logger.info(f"  {frame_idx}/{total_frames} frames done...")
-
-    cap.release()
-    logger.info("Encoding final video...")
-
-    cmd = [
-        "ffmpeg",
-        "-framerate", str(fps),
-        "-i", os.path.join(frames_dir, "frame_%06d.jpg"),
-        "-i", input_path,
-        "-map", "0:v", "-map", "1:a?",
-        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-        "-c:a", "copy", "-shortest",
-        output_path, "-y",
-    ]
-    result = subprocess.run(
-        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
-    )
-    if result.returncode != 0:
-        logger.error(f"ffmpeg failed:\n{result.stderr[-2000:]}")
-        raise RuntimeError("ffmpeg encode failed")
-
-    for f in Path(frames_dir).glob("*.jpg"):
-        f.unlink()
-    os.rmdir(frames_dir)
-    for f in Path(overlay_dir).glob("*.png"):
-        f.unlink()
-    os.rmdir(overlay_dir)
+        logger.info("Compositing and encoding with ffmpeg...")
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as err:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err,
+                                    text=True, encoding="utf-8", errors="replace")
+            last_reported = -1
+            for line in proc.stdout:
+                if line.startswith("frame="):
+                    try:
+                        done = int(line.split("=", 1)[1])
+                    except ValueError:
+                        continue
+                    # The UI's render route parses "N/M frames done"
+                    if done - last_reported >= max(1, total // 50):
+                        logger.info(f"  {min(done, total)}/{total} frames done...")
+                        last_reported = done
+            proc.wait()
+            if proc.returncode != 0:
+                err.seek(0)
+                logger.error(f"ffmpeg failed:\n{err.read()[-2000:]}")
+                raise RuntimeError("ffmpeg encode failed")
 
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    logger.info(f"  {total}/{total} frames done...")
     logger.info(f"Done: {output_path} ({size_mb:.1f} MB)")
 
 
@@ -473,28 +501,12 @@ def main() -> None:
     with open(detections_path, "r", encoding="utf-8") as f:
         detections = json.load(f)
 
-    result = subprocess.run([
-        "ffprobe", "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        input_path,
-    ], capture_output=True, text=True)
-    try:
-        duration = float(result.stdout.strip())
-    except ValueError:
-        duration = detections[-1]["timestamp"] + 2.0
-
+    meta = probe_video(input_path)
+    duration = meta["duration"] or (detections[-1]["timestamp"] + 2.0 if detections else 0.0)
     logger.info(f"Video duration: {duration:.1f}s")
 
-    # Get video dimensions up front so build_timeline can clamp bboxes
-    import cv2
-    cap   = cv2.VideoCapture(input_path)
-    vid_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vid_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-
-    timeline = build_timeline(detections, duration, vid_w=vid_w, vid_h=vid_h)
-    render_video(input_path, output_path, timeline)
+    timeline = build_timeline(detections, duration, vid_w=meta["w"], vid_h=meta["h"])
+    render_video(input_path, output_path, timeline, meta)
 
 
 if __name__ == "__main__":
