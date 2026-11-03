@@ -19,13 +19,18 @@ interface Block {
   id: string; text: string; translation: string
   bbox: [number, number, number, number]; conf: number
   words: { text: string; bbox: [number, number, number, number]; conf: number }[]
-  bgColor?: string; textColor?: string; autoBgColor?: string; fontSize?: number
+  bgColor?: string; textColor?: string; autoBgColor?: string; autoTextColor?: string
+  cover?: "erase" | "box"; fontSize?: number
 }
 interface Frame {
   frame_index: number; timestamp: number; frame_path: string; blocks: Block[]
 }
 
 function uid() { return Math.random().toString(36).slice(2) }
+
+// Identity of an on-screen text across frames: letters and digits only, since
+// OCR spacing varies between frames. Mirror: text_key() in render_translations.py
+const textKey = (t: string) => t.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "")
 
 // Older files may use `color` instead of `bgColor`
 type RawBlock = Partial<Block> & Pick<Block, "text" | "translation" | "bbox" | "conf" | "words"> & { color?: string }
@@ -60,7 +65,7 @@ function buildEvents(frames: Frame[], videoDuration: number): OverlayEvent[] {
     const frame = byTs[ts]
     const currentKeys = new Set<string>()
     for (const block of frame.blocks) {
-      const key = block.text.toLowerCase().trim()
+      const key = textKey(block.text)
       currentKeys.add(key)
       if (active[key]) { active[key].endTime = nextTs }
       else {
@@ -68,7 +73,8 @@ function buildEvents(frames: Frame[], videoDuration: number): OverlayEvent[] {
           id: block.id || uid(), blockText: block.text, translation: block.translation,
           bbox: [...block.bbox] as [number, number, number, number],
           bgColor: block.bgColor || "", textColor: block.textColor || "",
-          autoBgColor: block.autoBgColor,
+          autoBgColor: block.autoBgColor, autoTextColor: block.autoTextColor,
+          cover: block.cover,
           fontSize: block.fontSize,
           startTime: Math.max(0, ts - 0.5), endTime: nextTs, frameIndex: frame.frame_index,
         }
@@ -321,7 +327,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
         .filter((ev) => t >= ev.startTime && t < ev.endTime)
         .map((ev) => {
           const origBlock = origFrame.blocks.find(
-            (b) => b.text.toLowerCase().trim() === ev.blockText.toLowerCase().trim()
+            (b) => textKey(b.text) === textKey(ev.blockText)
           )
           return {
             id: ev.id, text: ev.blockText, translation: ev.translation,
@@ -330,6 +336,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
             // undefined is dropped by JSON.stringify, so auto stays unset on disk
             bgColor: ev.bgColor || undefined, textColor: ev.textColor || undefined,
             autoBgColor: origBlock?.autoBgColor ?? ev.autoBgColor,
+            autoTextColor: origBlock?.autoTextColor ?? ev.autoTextColor,
+            cover: ev.cover,
             fontSize: ev.fontSize,
           }
         })

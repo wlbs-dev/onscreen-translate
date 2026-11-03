@@ -9,8 +9,8 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { OverlayEvent } from "./VideoPlayer"
-import { effectiveFontSize, isAutoFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX } from "@/lib/editor/fontSize"
-import { effectiveBg, effectiveText, isHex } from "@/lib/editor/colors"
+import { effectiveFontSize, isAutoFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX, FONT_SIZE_RATIO } from "@/lib/editor/fontSize"
+import { coverStyle, effectiveBg, effectiveText, isHex } from "@/lib/editor/colors"
 
 interface SidebarProps {
   event: OverlayEvent | null
@@ -201,12 +201,38 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
 
         <Separator />
 
+        {/* Cover style */}
+        <div className="space-y-1.5">
+          <Label className="text-xs">Original text</Label>
+          <div className="grid grid-cols-2 gap-1 rounded-md border p-0.5" role="radiogroup">
+            {([["erase", "Erase it"], ["box", "Cover with box"]] as const).map(([value, label]) => (
+              <button
+                key={value} type="button" role="radio" aria-checked={coverStyle(event) === value}
+                onClick={() => onUpdate({ cover: value })}
+                className={`h-7 rounded text-xs transition-colors ${coverStyle(event) === value
+                  ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            {coverStyle(event) === "erase"
+              ? "The render removes the original text and rebuilds the background behind it. The preview only approximates this."
+              : "A flat patch hides the original text."}
+          </p>
+        </div>
+
         {/* Colors */}
-        <ColorRow label="Background color" value={event.bgColor} effective={effectiveBg(event)}
-          autoHint="Sampled from the video around the box"
-          onChange={(v) => onUpdate({ bgColor: v })} />
+        {coverStyle(event) === "box" && (
+          <ColorRow label="Background color" value={event.bgColor} effective={effectiveBg(event)}
+            autoHint="Sampled from the video around the box"
+            onChange={(v) => onUpdate({ bgColor: v })} />
+        )}
         <ColorRow label="Text color" value={event.textColor} effective={effectiveText(event)}
-          autoHint="White or black, whichever contrasts with the background"
+          autoHint={coverStyle(event) === "erase"
+            ? "Same colour as the original text"
+            : "White or black, whichever contrasts with the background"}
           onChange={(v) => onUpdate({ textColor: v })} />
 
         {/* Preview */}
@@ -265,7 +291,7 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
           </div>
           {autoSize && (
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Sized to 55% of the box height ({FONT_SIZE_MIN}–{FONT_SIZE_MAX}px), as in the render.
+              Sized to {Math.round(FONT_SIZE_RATIO * 100)}% of the box height ({FONT_SIZE_MIN}–{FONT_SIZE_MAX}px), as in the render.
             </p>
           )}
         </div>

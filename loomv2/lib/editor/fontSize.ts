@@ -8,8 +8,8 @@
 import type { OverlayEvent } from "./types"
 
 export const FONT_SIZE_MIN   = 14
-export const FONT_SIZE_MAX   = 72
-export const FONT_SIZE_RATIO = 0.55
+export const FONT_SIZE_MAX   = 120
+export const FONT_SIZE_RATIO = 0.72
 
 /** Auto size for a box, in video pixels (Python int() truncates → Math.floor) */
 export function autoFontSize(bbox: OverlayEvent["bbox"]): number {

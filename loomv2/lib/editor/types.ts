@@ -8,6 +8,14 @@ export interface OverlayEvent {
   bgColor?: string; textColor?: string
   /** Background sampled by OCR around the original box, for the preview */
   autoBgColor?: string
+  /** Fill colour of the original text (OCR); erase mode reuses it */
+  autoTextColor?: string
+  /**
+   * How the original text is covered. "erase" (default) removes it and
+   * rebuilds the background; "box" draws a flat patch. Unset + an explicit
+   * bgColor means box, matching render_translations.py.
+   */
+  cover?: "erase" | "box"
   /** Explicit font size in video pixels. Unset (or 0) → auto-fit to box height, see fontSize.ts */
   fontSize?: number
   startTime: number; endTime: number; frameIndex: number

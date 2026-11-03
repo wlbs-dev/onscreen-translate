@@ -23,6 +23,20 @@ export function autoTextColor(bgHex: string): string {
   return 0.299 * r + 0.587 * g + 0.114 * b < 128 ? "#ffffff" : "#000000"
 }
 
-export function effectiveText(ev: Pick<OverlayEvent, "bgColor" | "autoBgColor" | "textColor">): string {
-  return isHex(ev.textColor) ? ev.textColor : autoTextColor(effectiveBg(ev))
+type CoverFields = Pick<OverlayEvent, "bgColor" | "autoBgColor" | "textColor" | "autoTextColor" | "cover">
+
+/** Cover style the renderer will use (see _cover_style in render_translations.py) */
+export function coverStyle(ev: Pick<OverlayEvent, "cover" | "bgColor">): "erase" | "box" {
+  if (ev.cover === "erase" || ev.cover === "box") return ev.cover
+  return isHex(ev.bgColor) ? "box" : "erase"
+}
+
+/**
+ * Text colour the renderer will use: the user's choice; when erasing, the
+ * original text's colour; otherwise white/black for contrast.
+ */
+export function effectiveText(ev: CoverFields): string {
+  if (isHex(ev.textColor)) return ev.textColor
+  if (coverStyle(ev) === "erase" && isHex(ev.autoTextColor)) return ev.autoTextColor
+  return autoTextColor(effectiveBg(ev))
 }
