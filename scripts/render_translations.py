@@ -18,6 +18,8 @@ import numpy as np
 from dotenv import load_dotenv
 load_dotenv()
 
+from languages import all_font_files
+
 def setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
@@ -29,7 +31,7 @@ def setup_logging(verbose: bool) -> None:
 
 logger = logging.getLogger(__name__)
 
-FONT_PATH       = "assets/NotoSansDevanagari-Regular.ttf"
+FONT_DIR        = "assets"
 FONT_SIZE_MIN   = 14
 FONT_SIZE_MAX   = 72
 FONT_SIZE_RATIO = 0.55
@@ -137,7 +139,7 @@ def build_timeline(detections: list[dict], video_duration: float,
             if key in active:
                 active[key]["end_time"]    = next_ts
                 active[key]["bbox_px"]     = bbox_px
-                active[key]["marathi_text"] = (
+                active[key]["translated_text"] = (
                     block.get("translation") or block.get("marathi_text") or ""
                 )
                 active[key]["bg_color"]   = block.get("bgColor", "")
@@ -149,10 +151,11 @@ def build_timeline(detections: list[dict], video_duration: float,
                     "end_time":      next_ts,
                     "bbox_px":       bbox_px,
                     "original_text": block["text"],
-                    "marathi_text":  (
+                    "translated_text": (
                         block.get("translation") or block.get("marathi_text") or ""
                     ),
-                    "frame_path":    frame.get("frame_path", ""),
+                    "frame_path":    raw_frame_path(frame.get("frame_path", ""),
+                                                    frame.get("frame_index")),
                     "bg_color":      block.get("bgColor", ""),
                     "text_color":    block.get("textColor", "#ffffff"),
                     "font_size":     block.get("fontSize", 0),
@@ -175,14 +178,48 @@ def build_timeline(detections: list[dict], video_duration: float,
     logger.info(f"Timeline: {len(events)} overlay events")
     for idx, ev in enumerate(events):
         logger.debug(
-            f"  [{idx}] '{ev['marathi_text'][:30]}' "
+            f"  [{idx}] '{ev['translated_text'][:30]}' "
             f"bbox={ev['bbox_px']} "
             f"{ev['start_time']:.2f}s → {ev['end_time']:.2f}s"
         )
     return events
 
 
+# ── Fonts ─────────────────────────────────────────────────────────────────────
+
+def font_css() -> tuple[str, str]:
+    """
+    @font-face rules for every bundled Indic font plus a font-family stack.
+    Chromium falls back glyph-by-glyph, so any supported script (and Latin
+    proper nouns mixed in) renders without knowing the target language.
+    """
+    faces, families = [], []
+    for i, fname in enumerate(all_font_files()):
+        path = Path(FONT_DIR, fname).resolve()
+        if not path.is_file():
+            logger.warning(f"Font missing: {path}")
+            continue
+        family = f"Indic{i}"
+        faces.append(f"@font-face {{ font-family: '{family}'; src: url('{path.as_uri()}'); }}")
+        families.append(f"'{family}'")
+    return "\n".join(faces), ", ".join(families + ["sans-serif"])
+
+
 # ── Background color sampling ─────────────────────────────────────────────────
+
+def raw_frame_path(frame_path: str, frame_index) -> str:
+    """
+    OCR writes annotated frames (red boxes + labels drawn on) to
+    annotated_frames/ and the untouched ffmpeg frames to _frames/NNNNNN.jpg
+    (1-based). Sampling the background from the annotated frame picks up the
+    drawn boxes, so prefer the raw frame when it exists.
+    """
+    if frame_path and frame_index is not None:
+        raw = Path(frame_path).parent.parent / "_frames" / f"{int(frame_index) + 1:06d}.jpg"
+        if raw.is_file():
+            return str(raw)
+    return frame_path
+
 
 def hex_to_rgb(hex_color: str) -> list[int]:
     hex_color = hex_color.strip().lstrip("#")
@@ -258,8 +295,13 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
     logger.info(f"Pre-rendering {len(events)} overlays with Playwright...")
     from playwright.sync_api import sync_playwright
 
+    font_faces, font_stack = font_css()
+
     with sync_playwright() as p:
-        browser = p.chromium.launch()
+        # CHROMIUM_PATH lets Docker images / CI reuse a system Chromium
+        # instead of running `playwright install chromium`
+        chromium_path = os.environ.get("CHROMIUM_PATH") or None
+        browser = p.chromium.launch(executable_path=chromium_path)
 
         for i, event in enumerate(events):
             x1, y1, x2, y2 = event["bbox_px"]
@@ -295,20 +337,19 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
 
             png_path = os.path.join(overlay_dir, f"overlay_{i:04d}.png")
 
-            if not event["marathi_text"].strip():
+            if not event["translated_text"].strip():
                 from PIL import Image as PILImage
                 blank = PILImage.new("RGB", (bw, bh), (r, g, b))
                 blank.save(png_path)
                 overlay_cache[i] = (blank, x1, y1)
                 logger.info(f"  [{i+1}/{len(events)}] (blank cover) {bw}x{bh} at ({x1},{y1})")
             else:
-                font_src = f"file:///{Path(FONT_PATH).resolve().as_posix()}"
-                safe_text = html.escape(event["marathi_text"])
+                safe_text = html.escape(event["translated_text"])
                 measure_html = f"""<html><head><style>
-                    @font-face {{ font-family: 'NotoDevanagari'; src: url('{font_src}'); }}
+                    {font_faces}
                     * {{ margin: 0; padding: 0; }}
                     body {{ background: {bg_hex}; }}
-                    span {{ font-family: 'NotoDevanagari', sans-serif;
+                    span {{ font-family: {font_stack};
                             font-size: {font_size}px; color: {text_color};
                             white-space: nowrap; display: inline-block; padding: 2px 4px; }}
                 </style></head><body><span id="t">{safe_text}</span></body></html>"""
@@ -325,12 +366,12 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
                 final_w = min(final_w, vid_w - x1)
 
                 render_html = f"""<html><head><style>
-                    @font-face {{ font-family: 'NotoDevanagari'; src: url('{font_src}'); }}
+                    {font_faces}
                     * {{ margin: 0; padding: 0; box-sizing: border-box; }}
                     body {{ width: {final_w}px; height: {bh}px; background: {bg_hex};
                             display: flex; align-items: center;
                             justify-content: flex-start; overflow: hidden; }}
-                    span {{ font-family: 'NotoDevanagari', sans-serif;
+                    span {{ font-family: {font_stack};
                             font-size: {font_size}px; color: {text_color};
                             text-align: left; padding: 2px 4px; white-space: nowrap; }}
                 </style></head><body><span>{safe_text}</span></body></html>"""
@@ -343,7 +384,7 @@ def render_video(input_path: str, output_path: str, events: list[dict]) -> None:
 
                 overlay_cache[i] = (Image.open(png_path).convert("RGB"), x1, y1)
                 logger.info(
-                    f"  [{i+1}/{len(events)}] '{event['marathi_text'][:30]}' "
+                    f"  [{i+1}/{len(events)}] '{event['translated_text'][:30]}' "
                     f"bbox=({x1},{y1})→({x2},{y2}) box={bw}x{bh} → {final_w}x{bh}"
                 )
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-translate_detections.py — Translate OCR detections via Sarvam AI
+translate_detections.py — Translate OCR detections into an Indian language via Sarvam AI
 
 Two workflows:
   --ai    Use OpenAI to semantically group blocks before translating (better
@@ -14,6 +14,9 @@ Usage:
 
     # AI-assisted workflow
     python translate_detections.py --detections annotated/ocr_detections.json --ai
+
+    # Another target language (see languages.py)
+    python translate_detections.py --detections annotated/ocr_detections.json --target-lang hi-IN
 """
 
 import argparse
@@ -30,6 +33,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+from languages import DEFAULT_LANG, LANGUAGES, STYLE_NOTES, language_name
+
 
 def setup_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
@@ -44,18 +49,23 @@ logger = logging.getLogger(__name__)
 
 SARVAM_ENDPOINT   = "https://api.sarvam.ai/translate"
 SARVAM_SRC_LANG   = "en-IN"
-SARVAM_TGT_LANG   = "mr-IN"
 SARVAM_MODEL      = "mayura:v1"
+OPENAI_MODEL      = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 BACKOFF_SECONDS   = [5, 15, 30, 60]
 CACHE_FILE        = "cache/translation_cache.json"
 OVERLAP_THRESHOLD = 0.3
 IGNORE_WORDS      = {"danmusic", "dan-music"}
 
+# Set from --target-lang in main()
+TARGET_LANG       = DEFAULT_LANG
+
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Translate OCR detections to Marathi")
+    p = argparse.ArgumentParser(description="Translate OCR detections into an Indian language")
     p.add_argument("--detections", required=True, help="Path to ocr_detections.json")
     p.add_argument("--output",     default=None)
+    p.add_argument("--target-lang", default=DEFAULT_LANG, choices=sorted(LANGUAGES),
+                   help=f"Sarvam target language code (default {DEFAULT_LANG})")
     p.add_argument("--ai",         action="store_true",
                    help="Use OpenAI to semantically group blocks before translating")
     p.add_argument("--verbose",    action="store_true")
@@ -64,17 +74,32 @@ def parse_args() -> argparse.Namespace:
 
 # ── Sarvam translation ────────────────────────────────────────────────────────
 
+def _cache_get(cache: dict, key: str):
+    """Look up a language-scoped key; Marathi also checks pre-multi-language keys."""
+    scoped = f"{TARGET_LANG}:{key}"
+    if scoped in cache:
+        return cache[scoped]
+    if TARGET_LANG == "mr-IN" and key in cache:
+        return cache[key]
+    return None
+
+
+def _cache_put(cache: dict, key: str, value) -> None:
+    cache[f"{TARGET_LANG}:{key}"] = value
+
+
 def sarvam_translate(text: str, cache: dict) -> str:
     cache_key = hashlib.md5(text.strip().lower().encode("utf-8")).hexdigest()
-    if cache_key in cache:
+    hit = _cache_get(cache, cache_key)
+    if hit is not None:
         logger.debug(f"  Cache hit: '{text[:40]}'")
-        return cache[cache_key]
+        return hit
 
     api_key = os.environ.get("SARVAM_API_KEY", "")
     payload = json.dumps({
         "input":                text,
         "source_language_code": SARVAM_SRC_LANG,
-        "target_language_code": SARVAM_TGT_LANG,
+        "target_language_code": TARGET_LANG,
         "model":                SARVAM_MODEL,
         "enable_preprocessing": True,
     }).encode("utf-8")
@@ -95,7 +120,7 @@ def sarvam_translate(text: str, cache: dict) -> str:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             translation = body.get("translated_text", text)
-            cache[cache_key] = translation
+            _cache_put(cache, cache_key, translation)
             return translation
         except urllib.error.HTTPError as e:
             if e.code == 429:
@@ -113,16 +138,21 @@ def sarvam_translate(text: str, cache: dict) -> str:
 def openai_group_and_translate(blocks: list[str], cache: dict) -> dict[int, str]:
     """
     Send unique block texts to OpenAI. It groups semantically related blocks
-    and translates each group into Marathi.
-    Returns {block_index: marathi_translation}
+    and translates each group into the target language.
+    Returns {block_index: translation}
     """
     if not blocks:
         return {}
 
-    cache_key = "ai:" + hashlib.md5(json.dumps(blocks, ensure_ascii=False).encode()).hexdigest()
-    if cache_key in cache:
+    cache_key = f"ai:{OPENAI_MODEL}:" + hashlib.md5(json.dumps(blocks, ensure_ascii=False).encode()).hexdigest()
+    hit = _cache_get(cache, cache_key)
+    if hit is None and TARGET_LANG == "mr-IN":
+        # Entries written before the model was part of the key
+        hit = _cache_get(cache, "ai:" + cache_key.split(":", 2)[2])
+    if hit is not None:
         logger.debug("  AI cache hit")
-        return cache[cache_key]
+        # JSON round-trips dict keys as strings
+        return {int(k): v for k, v in hit.items()}
 
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
@@ -130,13 +160,15 @@ def openai_group_and_translate(blocks: list[str], cache: dict) -> dict[int, str]
         return {}
 
     numbered = "\n".join(f"{i}. {text}" for i, text in enumerate(blocks))
-    prompt = f"""You are a Marathi translator for video subtitles.
+    lang = language_name(TARGET_LANG)
+    style = STYLE_NOTES.get(TARGET_LANG, "")
+    prompt = f"""You are a {lang} translator for on-screen video text.
 
 The blocks below together form one or more complete sentences, split across screen positions. Translate the full meaning naturally, then distribute the translation across exactly {len(blocks)} parts — one part per block.
 
 Rules:
-- Translate the full thought for natural fluent Marathi (SOV word order, not Hindi)
-- Then split the Marathi output across exactly {len(blocks)} parts, proportional to how much English each block contains
+- Translate the full thought into natural, fluent {lang}, not word-by-word. {style}
+- Then split the {lang} output across exactly {len(blocks)} parts, proportional to how much English each block contains
 - Each part should be a meaningful chunk — not a single word unless the block itself is one word
 - Technical/proper nouns stay in English
 - Return ONLY valid JSON, no markdown
@@ -151,7 +183,7 @@ Output (must have exactly {len(blocks)} entries):
 ]"""
 
     payload = json.dumps({
-        "model": "gpt-4o-mini",
+        "model": OPENAI_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.2,
     }).encode("utf-8")
@@ -195,7 +227,7 @@ Output (must have exactly {len(blocks)} entries):
                 if i not in result:
                     logger.warning(f"  AI missed block {i}: '{blocks[i]}' — will fallback")
 
-            cache[cache_key] = result
+            _cache_put(cache, cache_key, result)
             return result
 
         except urllib.error.HTTPError as e:
@@ -309,8 +341,8 @@ def dedupe_blocks(bucket: list[dict]) -> list[str]:
 def translate_bucket_original(bucket: list[dict], cache: dict) -> dict[str, str]:
     """
     Collect unique clean words from the last frame, translate as one sentence,
-    map Marathi words back one-by-one.
-    Returns {english_word_lower: marathi_word}
+    map translated words back one-by-one.
+    Returns {english_word_lower: translated_word}
     """
     last_frame = bucket[-1]
 
@@ -335,15 +367,15 @@ def translate_bucket_original(bucket: list[dict], cache: dict) -> dict[str, str]
     logger.info(f"  Translation: '{full_translation}'")
 
     mr_words = full_translation.split()
-    word_to_marathi: dict[str, str] = {}
+    word_to_translation: dict[str, str] = {}
     for i, en_word in enumerate(ordered_words):
-        word_to_marathi[en_word.lower()] = mr_words[i] if i < len(mr_words) else ""
-        logger.debug(f"    '{en_word}' -> '{word_to_marathi[en_word.lower()]}'")
+        word_to_translation[en_word.lower()] = mr_words[i] if i < len(mr_words) else ""
+        logger.debug(f"    '{en_word}' -> '{word_to_translation[en_word.lower()]}'")
 
-    return word_to_marathi
+    return word_to_translation
 
 
-def apply_mapping_original(frame: dict, word_to_marathi: dict) -> list[dict]:
+def apply_mapping_original(frame: dict, word_to_translation: dict) -> list[dict]:
     translated_blocks = []
     for block in frame["blocks"]:
         clean_words = [w for w in block["words"] if is_clean_word(w)]
@@ -358,17 +390,17 @@ def apply_mapping_original(frame: dict, word_to_marathi: dict) -> list[dict]:
             })
             continue
 
-        marathi_parts = []
+        translated_parts = []
         for w in clean_words:
             tokens = w["text"].strip().lower().split()
             for token in tokens:
-                mr = word_to_marathi.get(token, "")
+                mr = word_to_translation.get(token, "")
                 if mr:
-                    marathi_parts.append(mr)
+                    translated_parts.append(mr)
 
         translated_blocks.append({
             "text":        " ".join(w["text"] for w in clean_words),
-            "translation": " ".join(marathi_parts),
+            "translation": " ".join(translated_parts),
             "bbox":        block["bbox"],
             "conf":        block["conf"],
             "words":       clean_words,
@@ -382,7 +414,7 @@ def apply_mapping_original(frame: dict, word_to_marathi: dict) -> list[dict]:
 def translate_bucket_ai(bucket: list[dict], cache: dict) -> dict[str, str]:
     """
     Translate using only the last frame (when all words are visible).
-    Returns {block_text_lower: marathi_translation}.
+    Returns {block_text_lower: translation}.
     All blocks in the same semantic group share the same translation string;
     apply_mapping_ai will only emit it once (topmost block).
     """
@@ -396,30 +428,30 @@ def translate_bucket_ai(bucket: list[dict], cache: dict) -> dict[str, str]:
 
     ai_result = openai_group_and_translate(last_frame_blocks, cache)
 
-    text_to_marathi: dict[str, str] = {}
+    text_to_translation: dict[str, str] = {}
     for i, block_text in enumerate(last_frame_blocks):
         if i in ai_result:
-            text_to_marathi[block_text.lower()] = ai_result[i]
+            text_to_translation[block_text.lower()] = ai_result[i]
             logger.info(f"  AI: '{block_text}' -> '{ai_result[i]}'")
         else:
             # Fallback: translate this block individually via Sarvam
             logger.info(f"  Fallback Sarvam for: '{block_text}'")
             translation = sarvam_translate(block_text, cache)
-            text_to_marathi[block_text.lower()] = translation
+            text_to_translation[block_text.lower()] = translation
 
-    return text_to_marathi
+    return text_to_translation
 
 
-def apply_mapping_ai(frame: dict, text_to_marathi: dict) -> list[dict]:
+def apply_mapping_ai(frame: dict, text_to_translation: dict) -> list[dict]:
     translated_blocks = []
 
     for block in frame["blocks"]:
         key = block["text"].strip().lower()
-        translation = text_to_marathi.get(key, "")
+        translation = text_to_translation.get(key, "")
 
         if not translation:
             key_words = set(key.split())
-            for full_text, full_translation in text_to_marathi.items():
+            for full_text, full_translation in text_to_translation.items():
                 if key_words & set(full_text.split()):
                     translation = full_translation
                     break
@@ -439,8 +471,10 @@ def apply_mapping_ai(frame: dict, text_to_marathi: dict) -> list[dict]:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
+    global TARGET_LANG
     args = parse_args()
     setup_logging(args.verbose)
+    TARGET_LANG = args.target_lang
 
     if not os.environ.get("SARVAM_API_KEY"):
         sys.exit("[ERROR] SARVAM_API_KEY not set in .env")
@@ -461,17 +495,19 @@ def main() -> None:
 
     workflow = "AI-assisted (OpenAI grouping + Sarvam fallback)" if args.ai else "original (Sarvam word-mapping)"
     logger.info(f"Workflow: {workflow}")
+    logger.info(f"Target language: {language_name(TARGET_LANG)} ({TARGET_LANG})")
 
     buckets = segment_into_buckets(detections)
 
     translated = []
     for i, bucket in enumerate(buckets):
         logger.info(f"Bucket {i+1}/{len(buckets)} ({len(bucket)} frames)")
+        print(f"PROGRESS:{i / max(len(buckets), 1):.3f}", flush=True)
 
         if args.ai:
-            text_to_marathi = translate_bucket_ai(bucket, cache)
+            text_to_translation = translate_bucket_ai(bucket, cache)
             for frame in bucket:
-                translated_blocks = apply_mapping_ai(frame, text_to_marathi)
+                translated_blocks = apply_mapping_ai(frame, text_to_translation)
                 translated.append({
                     "frame_index": frame["frame_index"],
                     "timestamp":   frame["timestamp"],
@@ -479,9 +515,9 @@ def main() -> None:
                     "blocks":      translated_blocks,
                 })
         else:
-            word_to_marathi = translate_bucket_original(bucket, cache)
+            word_to_translation = translate_bucket_original(bucket, cache)
             for frame in bucket:
-                translated_blocks = apply_mapping_original(frame, word_to_marathi)
+                translated_blocks = apply_mapping_original(frame, word_to_translation)
                 translated.append({
                     "frame_index": frame["frame_index"],
                     "timestamp":   frame["timestamp"],
