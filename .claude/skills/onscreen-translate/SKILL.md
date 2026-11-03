@@ -11,9 +11,10 @@ Video → **OCR** → **Translate** → **Render** → output.mp4, driven from a
 
 | Path | What it is |
 |---|---|
-| `scripts/ocr_annotate.py` | ffmpeg frame extraction (default 2 fps) to `_frames/`, skips frames identical to the last OCR'd keyframe (`--no-dedupe` to disable), RapidOCR (PP-OCRv6 ONNX models bundled in the `rapidocr` wheel, no downloads) in a multiprocessing pool; groups words into line blocks; writes annotated JPGs to `annotated_frames/` + `ocr_detections.json` |
-| `scripts/translate_detections.py` | Segments frames into scene "buckets", translates via Sarvam `mayura:v1` into `--target-lang` (default `mr-IN`); `--ai` groups/translates with OpenAI (`OPENAI_MODEL`) first and falls back to Sarvam |
-| `scripts/render_translations.py` | Builds an overlay timeline, draws each overlay PNG with Pillow + raqm (text split into per-script runs, each with its Noto font from `scripts/assets/`), then one ffmpeg pass composites them with timed `overlay` filters (in yuv444) and encodes |
+| `scripts/ocr_annotate.py` | Converts the upload in place to H.264/AAC MP4 if the browser can't play it (`media.py`), ffmpeg frame extraction (default 2 fps) to `_frames/`, skips frames identical to the last OCR'd keyframe (`--no-dedupe` to disable), RapidOCR (PP-OCRv6 ONNX models bundled in the `rapidocr` wheel, no downloads) in a multiprocessing pool; groups words into line blocks; records `autoBgColor` / `autoTextColor` per block; drops lines without Latin letters; writes annotated JPGs to `annotated_frames/` + `ocr_detections.json` |
+| `scripts/translate_detections.py` | Segments frames into scene "buckets", translates each block via Sarvam `mayura:v1` into `--target-lang` (default `mr-IN`); `--ai` groups/translates with OpenAI (`OPENAI_MODEL`) first and falls back to Sarvam |
+| `scripts/render_translations.py` | Builds an overlay timeline, per event either erases the original text (`erase.py`: median-blur text mask unioned over the span → `cv2.inpaint` clean plate when static, ffmpeg `delogo` + transparent outlined text when moving) or draws a flat box (`cover: "box"`, or any explicit `bgColor`); text is drawn with Pillow + raqm in per-script runs with Noto fonts; one ffmpeg pass composites everything with timed `overlay` filters (in yuv444) and encodes |
+| `scripts/erase.py`, `scripts/colors.py`, `scripts/media.py` | Text erasing, shared colour rules (mirror: `loomv2/lib/editor/colors.ts`), upload conversion |
 | `scripts/languages.py` | Supported target languages → name + font. Mirror: `loomv2/lib/languages.ts` (picker) and `loomv2/lib/editor/indicFonts.ts` (preview fonts) |
 | `scripts/cache/translation_cache.json` | `<lang>:md5(text)` → translation cache (legacy unprefixed keys = Marathi), created at runtime and gitignored. Delete it to force re-translation |
 | `loomv2/` | Next.js 16 App Router + React 19 + Tailwind 4 + shadcn/ui editor |
@@ -85,6 +86,8 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - The renderer samples cover-patch colours from the raw frame `_frames/{frame_index+1:06d}.jpg`, not the annotated `frame_path` (which has boxes drawn on it).
 - Never load the OCR model only inside a `Pool` initializer: if it fails there the pool respawns workers forever. `ocr_annotate.py` loads it once in the parent first.
 - Adding a language: update `scripts/languages.py`, `loomv2/lib/languages.ts`, and (for a new script) add the font to `scripts/assets/` and `loomv2/lib/editor/indicFonts.ts`.
+- Overlay identity across frames is `text_key()` (letters/digits only) in the renderer and translator, mirrored by `textKey()` in `Editor.tsx`. Change them together.
+- Detections JSON block fields the editor may write: `bgColor`, `textColor`, `fontSize`, `cover` (`erase`|`box`) — all optional, empty = auto. `autoBgColor`/`autoTextColor` come from OCR and must be passed through (`PASSTHROUGH_FIELDS` in translate, `eventsToFrames` in the editor).
 - `render_translations.py`: validate colors from the editable JSON with `HEX_COLOR_RE`. Pillow has no font fallback — new scripts need a range in `SCRIPT_RANGES`. Keep text padding (`TEXT_PAD_X`, `PATCH_SLACK`) in sync with `OverlayCanvas.tsx`.
 - Never commit videos, `.env`, or `scripts/cache/` (all gitignored). The repo is public.
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.

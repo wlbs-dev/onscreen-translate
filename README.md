@@ -12,9 +12,9 @@ A full-stack tool that takes a video, detects on-screen English text via OCR, tr
 Video → OCR → Translation → Render → Output video
 ```
 
-1. **OCR** — extracts text blocks from every frame, with bounding boxes and confidence scores (frames identical to the previous one are skipped)
-2. **Translation** — translates detected text into the chosen language via Sarvam AI (or OpenAI-assisted for better quality)
-3. **Render** — burns translated overlays back onto the video at the correct positions and timestamps
+1. **OCR** — converts the upload to browser-playable H.264 MP4 if needed (MOV, MKV, WebM, HEVC, ProRes, 10-bit…), then extracts text blocks with bounding boxes, confidence and the original text colour (frames identical to the previous one are skipped)
+2. **Translation** — translates each on-screen block into the chosen language via Sarvam AI (or OpenAI-assisted, which translates whole sentences split across boxes)
+3. **Render** — **erases the original text** and rebuilds the background behind it, then draws the translation in the original colour at the same position and time. Static backgrounds get an inpainted clean plate; moving ones are erased frame by frame. A flat colour box is available per text as an alternative
 4. **Editor UI** — a Next.js dashboard to review jobs, edit overlay text/timing/style, and retranslate
 
 ---
@@ -121,10 +121,10 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 ## Translation modes
 
 ### Standard (Sarvam only)
-- Collects all visible words from the last frame of each scene bucket
-- Joins them into a sentence and sends to Sarvam AI
-- Maps translated words back to blocks positionally
-- Works well when full sentences appear on screen
+- Uses the last frame of each scene bucket (when all text is visible)
+- Translates each on-screen block (line) on its own with Sarvam AI
+- Earlier frames where text is still typing on borrow the full block's translation
+- Best when each box holds a complete phrase: titles, labels, captions, lower-thirds
 
 ### AI-assisted (`--ai`)
 - Uses the last frame of each bucket (when all text is visible) for translation
@@ -139,11 +139,11 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 
 ## Roadmap
 
-**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · optional password gate · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders)
+**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads
 
 **OCR + Translation**
-- Standard mode maps translated words back to blocks by position, which breaks for SOV languages when a sentence spans several boxes — translate per block with sentence context instead
-- Inpaint the original text (instead of a flat colour patch) for gradient / photo backgrounds
+- Erasing on busy textures and moving backgrounds is the weakest case (inpainting smears, delogo blurs) — a learned inpainting model (e.g. LaMa via ONNX) would fix most of it
+- Match the original font weight (bold titles currently render regular)
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Translate into several languages from one OCR pass
 
@@ -228,7 +228,8 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 
 - `workspace/` is created automatically at runtime and is gitignored
 - Sarvam AI's Marathi translation quality is inconsistent for single words — the `--ai` mode significantly improves results by translating full sentences with context
-- For best results on subtitle-style videos (full sentences on screen), use standard mode. For infographic/keyword videos, use `--ai`
+- Standard mode translates box by box, so it suits titles, labels and one-line captions. When one sentence is split across several boxes, use `--ai` so it is translated as a whole
+- The editor preview approximates erasing (a translucent patch in the sampled background colour); the render does the real erase
 - No sample videos are included — bring your own, and only process content you have the rights to
 
 ---
