@@ -1,15 +1,16 @@
 import { NextRequest } from "next/server"
 import fs from "fs"
-import { jobPaths, isValidJobId } from "../../../lib/jobPaths"
+import { jobPaths } from "../../../lib/jobPaths"
+import { requireJobAccess } from "../../../lib/access"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
 
 export async function GET(req: NextRequest) {
-  const jobId = new URL(req.url).searchParams.get("jobId")
-  if (!isValidJobId(jobId)) return new Response("Missing or invalid jobId", { status: 400 })
+  const access = await requireJobAccess(req, new URL(req.url).searchParams.get("jobId"))
+  if (access instanceof Response) return access
 
-  const filePath = jobPaths(jobId).video
+  const filePath = jobPaths(access.job.id).video
   if (!fs.existsSync(filePath)) return new Response("Video not found", { status: 404 })
 
   const stat = fs.statSync(filePath)

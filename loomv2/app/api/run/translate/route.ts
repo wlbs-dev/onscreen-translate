@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { existsSync } from "fs"
-import { getJob, updateJob } from "../../../../lib/jobStore"
+import { updateJob } from "../../../../lib/jobStore"
+import { requireJobAccess } from "../../../../lib/access"
 import { DEFAULT_LANG, isSupportedLang } from "../../../../lib/languages"
 import { jobPaths, getPython, SCRIPTS_DIR } from "../../../../lib/jobPaths"
 import { runScript } from "../../../../lib/runScript"
@@ -15,10 +16,9 @@ export async function POST(req: NextRequest) {
   const useAi = searchParams.get("ai") === "true"
   const lang = searchParams.get("lang") ?? DEFAULT_LANG
   if (!jobId) return NextResponse.json({ error: "Missing jobId" }, { status: 400 })
+  const access = await requireJobAccess(req, jobId)
+  if (access instanceof Response) return access
   if (!isSupportedLang(lang)) return NextResponse.json({ error: `Unsupported language: ${lang}` }, { status: 400 })
-
-  const job = getJob(jobId)
-  if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 })
 
   const paths = jobPaths(jobId)
   const scriptPath = path.join(SCRIPTS_DIR, "translate_detections.py")
