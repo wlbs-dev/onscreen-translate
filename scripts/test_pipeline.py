@@ -10,7 +10,10 @@ import unittest
 import numpy as np
 from PIL import Image
 
+import cv2
+
 import colors
+import erase
 import ocr_annotate
 import render_translations as rt
 import translate_detections as td
@@ -94,6 +97,74 @@ class Colors(unittest.TestCase):
         self.assertEqual((tl[0]["bg_color"], tl[0]["text_color"]), ("", ""))
         self.assertEqual(rt.sample_bg_color("", [0, 0, 10, 10], "", tl[0]["auto_bg"]), (0x11, 0x22, 0x33))
         self.assertEqual(rt.sample_bg_color("", [0, 0, 10, 10], "#ff0000", "#112233"), (255, 0, 0))
+
+
+def _gradient(w=400, h=120):
+    x = np.linspace(0, 1, w)[None, :, None]
+    a, b = np.array([145, 61, 11]), np.array([95, 126, 255])   # BGR
+    return np.repeat((a + (b - a) * x), h, axis=0).astype(np.uint8)
+
+
+class Erase(unittest.TestCase):
+    def setUp(self):
+        self.bg = _gradient()
+        self.img = self.bg.copy()
+        cv2.putText(self.img, "Photosynthesis", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+        self.rect = (0, 0, 400, 120)
+
+    def test_mask_covers_text_not_background(self):
+        mask = erase.text_mask(self.img, 60) > 0
+        text_px = np.abs(self.img.astype(int) - self.bg.astype(int)).max(axis=2) > 40
+        self.assertGreater(mask[text_px].mean(), 0.98, "text pixels missed")
+        self.assertLess(mask.mean(), 0.35, "mask spills over the background")
+
+    def test_inpaint_restores_gradient(self):
+        mask, moving, _ = erase.analyse_span([self.img], self.rect, 60)
+        self.assertFalse(moving)
+        plate = erase.clean_plate(self.img, self.rect, mask)
+        err = np.abs(plate.astype(int) - self.bg.astype(int)).max(axis=2)
+        self.assertLess(np.percentile(err, 99), 30)
+
+    def test_text_colour_is_the_fill(self):
+        r, g, b = erase.text_color(self.img, 60)
+        self.assertGreater(min(r, g), 200)   # yellow (BGR 0,255,255)
+        self.assertLess(b, 80)
+
+    def test_motion_detection(self):
+        core = (15, 35, 330, 85)  # the text box within the crop
+        static = erase.analyse_span([self.img, self.img.copy()], self.rect, 60, core)[1]
+        moved = self.img.copy()
+        cv2.line(moved, (0, 112), (400, 100), (255, 255, 255), 2)  # thin line passing by
+        self.assertFalse(static)
+        self.assertTrue(erase.analyse_span([self.img, moved], self.rect, 60, core)[1])
+        self.assertTrue(erase.analyse_span([moved, self.img], self.rect, 60, core)[1])
+
+    def test_type_on_text_is_not_motion(self):
+        core = (15, 35, 330, 85)
+        partial = self.bg.copy()
+        cv2.putText(partial, "Photo", (20, 75), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 255), 3)
+        mask, moving, base = erase.analyse_span([partial, self.img], self.rect, 60, core)
+        self.assertFalse(moving)
+        self.assertEqual(base, 1)
+
+
+class TextKeys(unittest.TestCase):
+    def test_ocr_spacing_variants_match(self):
+        self.assertEqual(rt.text_key("Limitedoffer 50% off"), rt.text_key("Limited offer 50% off"))
+        self.assertEqual(td.text_key("Limitedoffer 50% off"), rt.text_key("Limited offer 50%off"))
+
+    def test_standard_mode_translates_each_block(self):
+        calls = []
+        orig = td.sarvam_translate
+        td.sarvam_translate = lambda text, cache: (calls.append(text), f"<{text}>")[1]
+        try:
+            bucket = [{"blocks": [{"text": "Photosynthesis"}, {"text": "Plants make food"}, {"text": "2026"}]}]
+            out = td.translate_bucket_standard(bucket, {})
+        finally:
+            td.sarvam_translate = orig
+        self.assertEqual(calls, ["Photosynthesis", "Plants make food"])
+        frame = {"blocks": [{"text": "Plants  make food", "bbox": [0, 0, 1, 1], "conf": 1}]}
+        self.assertEqual(td.apply_mapping(frame, out)[0]["translation"], "<Plants make food>")
 
 
 class CacheKeys(unittest.TestCase):
