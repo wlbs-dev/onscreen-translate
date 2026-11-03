@@ -11,9 +11,9 @@ Video → **OCR** → **Translate** → **Render** → output.mp4, driven from a
 
 | Path | What it is |
 |---|---|
-| `scripts/ocr_annotate.py` | ffmpeg frame extraction (default 2 fps) to `_frames/`, skips frames identical to the last OCR'd keyframe (`--no-dedupe` to disable), PaddleOCR in a multiprocessing pool; groups words into line blocks; writes annotated JPGs to `annotated_frames/` + `ocr_detections.json` |
+| `scripts/ocr_annotate.py` | ffmpeg frame extraction (default 2 fps) to `_frames/`, skips frames identical to the last OCR'd keyframe (`--no-dedupe` to disable), RapidOCR (PP-OCRv6 ONNX models bundled in the `rapidocr` wheel, no downloads) in a multiprocessing pool; groups words into line blocks; writes annotated JPGs to `annotated_frames/` + `ocr_detections.json` |
 | `scripts/translate_detections.py` | Segments frames into scene "buckets", translates via Sarvam `mayura:v1` into `--target-lang` (default `mr-IN`); `--ai` groups/translates with OpenAI (`OPENAI_MODEL`) first and falls back to Sarvam |
-| `scripts/render_translations.py` | Builds an overlay timeline, pre-renders each overlay as HTML with Playwright (all Noto Sans Indic fonts from `scripts/assets/` in one fallback stack), composites with OpenCV/Pillow, encodes with ffmpeg |
+| `scripts/render_translations.py` | Builds an overlay timeline, draws each overlay PNG with Pillow + raqm (text split into per-script runs, each with its Noto font from `scripts/assets/`), then one ffmpeg pass composites them with timed `overlay` filters (in yuv444) and encodes |
 | `scripts/languages.py` | Supported target languages → name + font. Mirror: `loomv2/lib/languages.ts` (picker) and `loomv2/lib/editor/indicFonts.ts` (preview fonts) |
 | `scripts/cache/translation_cache.json` | `<lang>:md5(text)` → translation cache (legacy unprefixed keys = Marathi), created at runtime and gitignored. Delete it to force re-translation |
 | `loomv2/` | Next.js 16 App Router + React 19 + Tailwind 4 + shadcn/ui editor |
@@ -46,10 +46,12 @@ All long-running routes queue the script and return immediately (409 if that sta
 ## Running
 
 ```bash
-# Python (from scripts/)
+# Everything at once (venv, npm, .env, tests)
+./setup.sh
+
+# Or by hand — Python (from scripts/)
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt     # paddleocr pinned <3 (2.x API)
-playwright install chromium        # ffmpeg must also be on PATH
+pip install -r requirements.txt     # rapidocr + onnxruntime, Pillow (with raqm); ffmpeg must be on PATH
 
 # .env in repo root (cp .env.example .env)
 SARVAM_API_KEY=...
@@ -70,8 +72,8 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 ## Testing without API keys or model downloads
 
 - Sarvam: run a tiny local HTTP server that answers `{"translated_text": ...}` and set `SARVAM_API_URL=http://127.0.0.1:<port>` and any `SARVAM_API_KEY`.
-- PaddleOCR downloads models from `paddleocr.bj.bcebos.com` on first use; in a sandbox without that host OCR fails fast with `Could not load PaddleOCR`. Write a stub `frames/ocr_detections.json` (+ `_frames/NNNNNN.jpg` from ffmpeg) to test translate/render.
-- Render with a preinstalled browser: `CHROMIUM_PATH=/path/to/chrome`.
+- OCR works offline (models are in the wheel). A test video with text: `ffmpeg -f lavfi -i color=c=0x1e3a8a:s=1280x720:r=25:d=8 -vf "drawtext=fontfile=scripts/assets/NotoSansDevanagari-Regular.ttf:text='Welcome':fontsize=64:fontcolor=white:x=120:y=200" -pix_fmt yuv420p in.mp4`
+- Unit tests: `cd scripts && .venv/bin/python -m unittest test_pipeline -v`
 
 ## Gotchas
 
@@ -79,10 +81,10 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - **Scripts must run with `cwd = scripts/`.** The renderer loads `assets/NotoSansDevanagari-Regular.ttf` by relative path.
 - Long-running stages go through `runScript`; scripts report progress with `PROGRESS:0.42` lines or a `parseProgress` hook (render matches `N/M frames done`).
 - Job ids are UUIDs. Anything that builds a path from a request id must go through `isValidJobId` / `jobPaths()` (which throws on bad ids).
-- Without `APP_PASSWORD` the API has no auth, so `dev`/`start` bind to `127.0.0.1`. `start:public` (and the Docker image) bind `0.0.0.0` and refuse to start without `APP_PASSWORD` unless `ALLOW_NO_AUTH=1`.
+- Without `APP_PASSWORD` the API has no auth, so `dev`/`start` bind to `127.0.0.1`. `start:public` binds `0.0.0.0` and refuse to start without `APP_PASSWORD` unless `ALLOW_NO_AUTH=1`.
 - The renderer samples cover-patch colours from the raw frame `_frames/{frame_index+1:06d}.jpg`, not the annotated `frame_path` (which has boxes drawn on it).
-- Never start PaddleOCR only inside a `Pool` initializer: if it fails there the pool respawns workers forever. `ocr_annotate.py` loads it once in the parent first.
+- Never load the OCR model only inside a `Pool` initializer: if it fails there the pool respawns workers forever. `ocr_annotate.py` loads it once in the parent first.
 - Adding a language: update `scripts/languages.py`, `loomv2/lib/languages.ts`, and (for a new script) add the font to `scripts/assets/` and `loomv2/lib/editor/indicFonts.ts`.
-- `render_translations.py` builds HTML for Playwright: always `html.escape` text and validate colors (`HEX_COLOR_RE`) before interpolating.
+- `render_translations.py`: validate colors from the editable JSON with `HEX_COLOR_RE`. Pillow has no font fallback — new scripts need a range in `SCRIPT_RANGES`. Keep text padding (`TEXT_PAD_X`, `PATCH_SLACK`) in sync with `OverlayCanvas.tsx`.
 - Never commit videos, `.env`, or `scripts/cache/` (all gitignored). The repo is public.
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.

@@ -24,9 +24,9 @@ Video → OCR → Translation → Render → Output video
 | Layer | Tech |
 |---|---|
 | Frontend | Next.js (App Router), React, Tailwind, shadcn/ui |
-| OCR | Python script using PaddleOCR (frames extracted with ffmpeg) |
+| OCR | [RapidOCR](https://github.com/RapidAI/RapidOCR): PP-OCRv6 models on ONNX Runtime, bundled in the pip wheel (frames extracted with ffmpeg) |
 | Translation | Sarvam AI (`mayura:v1`) + optional OpenAI (`gpt-4o-mini`) grouping |
-| Rendering | Python + Playwright (text, bundled Noto Sans Indic fonts), OpenCV / Pillow (compositing), ffmpeg (encode) |
+| Rendering | Pillow + raqm/HarfBuzz draws each overlay (bundled Noto Sans Indic fonts); ffmpeg composites all overlays and encodes in one pass |
 | Job management | Node.js file-based job store + in-process queue |
 
 ---
@@ -43,33 +43,26 @@ Video → OCR → Translation → Render → Output video
 
 ## Setup
 
-### 1. Clone and install
-
 ```bash
 git clone https://github.com/wlbs-dev/onscreen-translate
 cd onscreen-translate
+./setup.sh
+```
+
+`setup.sh` checks for ffmpeg, Node and Python 3.10+, creates `scripts/.venv` with the pipeline dependencies (about 400 MB, no model downloads — the OCR models ship inside the `rapidocr` wheel), runs the pipeline tests, installs the UI's npm packages and copies `.env.example` to `.env`. Then put your keys in `.env` (it's gitignored — never commit real keys).
+
+<details>
+<summary>Manual setup (e.g. on Windows)</summary>
+
+```bash
 (cd loomv2 && npm install)
-```
-
-### 2. Python dependencies
-
-```bash
 cd scripts
-python -m venv .venv && source .venv/bin/activate   # the web UI prefers scripts/.venv if it exists
-pip install -r requirements.txt
-playwright install chromium
+python -m venv .venv          # the web UI prefers scripts/.venv if it exists
+.venv/bin/pip install -r requirements.txt    # Windows: .venv\Scripts\pip
 cd ..
-```
-
-### 3. Environment variables
-
-Copy the template to `.env` in the repo root and fill in your keys:
-
-```bash
 cp .env.example .env
 ```
-
-`.env` is gitignored — never commit real keys.
+</details>
 
 ### 4. Run the dev server
 
@@ -146,7 +139,7 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 
 ## Roadmap
 
-**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · optional password gate · Docker image
+**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · optional password gate · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders)
 
 **OCR + Translation**
 - Standard mode maps translated words back to blocks by position, which breaks for SOV languages when a sentence spans several boxes — translate per block with sentence context instead
@@ -240,14 +233,24 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 
 ---
 
-## Deploying
+## Running it for other people
+
+On any Linux box or VM with ffmpeg, Node and Python:
 
 ```bash
-docker build -t onscreen-translate .
-docker run -p 3000:3000 -v ot-data:/data --env-file .env onscreen-translate
+./setup.sh
+cd loomv2 && npm run build
+APP_PASSWORD=choose-one WORKSPACE_DIR=/var/lib/onscreen-translate npm run start:public
 ```
 
-The image bundles Node, Python, ffmpeg, Chromium and the PaddleOCR English models, keeps jobs in the `/data` volume, and exposes `GET /api/health`. It listens on all interfaces, so it **refuses to start without `APP_PASSWORD`** (set `ALLOW_NO_AUTH=1` only if another auth layer sits in front). Without Docker, `npm run build && npm run start:public` does the same. All settings are listed in `.env.example`.
+`start:public` listens on all interfaces, so it **refuses to start without `APP_PASSWORD`** (set `ALLOW_NO_AUTH=1` only if another auth layer sits in front). Put HTTPS in front of it (Caddy, nginx, or a tunnel like Cloudflare Tunnel). `GET /api/health` is an unauthenticated liveness check. All settings are listed in `.env.example`.
+
+## Tests
+
+```bash
+cd scripts && .venv/bin/python -m unittest test_pipeline -v   # script splitting, shaping, dedupe, cache keys
+cd loomv2 && npx tsc --noEmit && npm run lint
+```
 
 ## Security
 

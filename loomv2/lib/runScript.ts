@@ -3,8 +3,8 @@
  * Queued, fire-and-forget Python script runner that updates jobStore as
  * output arrives.
  *
- * OCR and render are CPU-heavy (PaddleOCR uses every core, render runs a
- * browser + ffmpeg), so stages go through one in-process queue capped at
+ * OCR and render are CPU-heavy (OCR uses every core, render runs a full
+ * ffmpeg encode), so stages go through one in-process queue capped at
  * MAX_CONCURRENT_JOBS (default 1). Queue state lives on globalThis so every
  * route bundle in the same server process shares it.
  */
