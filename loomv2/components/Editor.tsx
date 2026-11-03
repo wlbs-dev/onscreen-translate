@@ -110,34 +110,37 @@ export default function Editor({ jobId, onBack }: EditorProps) {
 
   const q = `?jobId=${jobId}`
 
-  async function loadRenderStatus() {
-    try {
-      const res = await fetch(`/api/render/status${q}`)
-      if (!res.ok) return
-      const status = await res.json()
-      setRenderStatus(status.status ?? "idle")
-      setRenderProgress(status.progress ?? 0)
-      setRenderMessage(status.message ?? "")
-      setRenderLog(status.log ?? [])
-    } catch (err) {
-      console.error("Failed to load render status", err)
-    }
+  // Promise chain (not async/await) so effects can call it without the
+  // react-hooks lint treating the setState calls as synchronous
+  function loadRenderStatus() {
+    return fetch(`/api/render/status${q}`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((status) => {
+        if (!status) return
+        setRenderStatus(status.status ?? "idle")
+        setRenderProgress(status.progress ?? 0)
+        setRenderMessage(status.message ?? "")
+        setRenderLog(status.log ?? [])
+      })
+      .catch((err) => console.error("Failed to load render status", err))
   }
 
+  // isLoading starts true; the editor is remounted per job (see app/page.tsx)
   useEffect(() => {
-    setIsLoading(true)
     fetch(`/api/detections${q}`)
       .then((r) => r.json())
       .then((data) => setFrames(addIds(data)))
       .catch(console.error)
       .finally(() => setIsLoading(false))
-  }, [jobId])
+  }, [q])
 
-  useEffect(() => { loadRenderStatus() }, [jobId])
+  const refreshRenderStatus = useEffectEvent(() => { loadRenderStatus() })
+
+  useEffect(() => { refreshRenderStatus() }, [jobId])
 
   useEffect(() => {
     if (renderStatus !== "running") return
-    const poll = setInterval(loadRenderStatus, 1000)
+    const poll = setInterval(() => refreshRenderStatus(), 1000)
     return () => clearInterval(poll)
   }, [renderStatus, jobId])
 
