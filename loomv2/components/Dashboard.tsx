@@ -31,15 +31,19 @@ import {
   AlertDialogAction,
 } from "@/components/ui/alert-dialog"
 import Header from "./Header"
+import LanguageSelect, { rememberedLang } from "./LanguageSelect"
+import { languageName } from "@/lib/languages"
 
 interface Job {
   id: string
   createdAt: number
   label: string
+  targetLang: string
+  aiMode: boolean
   outputExists: boolean
-  ocr:       { status: string; progress: number }
-  translate: { status: string; progress: number }
-  render:    { status: string; progress: number }
+  ocr:       { status: string; progress: number; message?: string }
+  translate: { status: string; progress: number; message?: string }
+  render:    { status: string; progress: number; message?: string }
 }
 
 function timeAgo(ts: number) {
@@ -54,7 +58,7 @@ function timeAgo(ts: number) {
 
 function statusVariant(status: string): "default" | "secondary" | "destructive" | "outline" {
   if (status === "done")    return "default"
-  if (status === "running") return "secondary"
+  if (status === "running" || status === "queued") return "secondary"
   if (status === "error")   return "destructive"
   return "outline"
 }
@@ -64,26 +68,19 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
   onOpen: () => void
   onRename: (id: string, label: string) => Promise<void>
   onDelete: (id: string) => Promise<void>
-  onRetranslate: (id: string, useAi: boolean) => Promise<void>
+  onRetranslate: (id: string, useAi: boolean, lang: string) => Promise<void>
 }) {
   const [editing, setEditing]                     = useState(false)
   const [draft, setDraft]                         = useState(job.label)
   const [saving, setSaving]                       = useState(false)
   const [error, setError]                         = useState<string | null>(null)
-  const [translating, setTranslating]             = useState(false)
-  const [translatePct, setTranslatePct]           = useState(0)
+  const [requesting, setRequesting]               = useState(false)
   const [showTranslateDialog, setShowTranslateDialog] = useState(false)
+  const [lang, setLang]                           = useState(() => job.targetLang || rememberedLang())
 
-  useEffect(() => { setDraft(job.label) }, [job.label])
-
-  useEffect(() => {
-    if (job.translate.status === "running") {
-      setTranslating(true)
-      setTranslatePct(job.translate.progress ?? 0)
-    } else {
-      setTranslating(false)
-    }
-  }, [job.translate.status, job.translate.progress])
+  // Derived from the polled job so it survives reloads and other tabs
+  const translating  = requesting || job.translate.status === "running" || job.translate.status === "queued"
+  const translatePct = job.translate.progress ?? 0
 
   const saveLabel = async (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -105,15 +102,14 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
   }
 
   const handleRetranslate = async (useAi: boolean = false) => {
-    setTranslating(true)
-    setTranslatePct(0)
+    setRequesting(true)
     setError(null)
     try {
-      await onRetranslate(job.id, useAi)
+      await onRetranslate(job.id, useAi, lang)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Translation failed")
     } finally {
-      setTranslating(false)
+      setRequesting(false)
     }
   }
 
@@ -151,11 +147,11 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenuItem onSelect={() => setEditing(true)}>
+                  <DropdownMenuItem onSelect={() => { setDraft(job.label); setEditing(true) }}>
                     Rename
                   </DropdownMenuItem>
                   <DropdownMenuItem
-                    onSelect={() => setShowTranslateDialog(true)}
+                    onSelect={() => { setLang(job.targetLang || rememberedLang()); setShowTranslateDialog(true) }}
                     disabled={translating}
                     className="gap-2"
                   >
@@ -188,7 +184,8 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
           <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
             <div className="flex justify-between text-[10px] text-muted-foreground">
               <span className="flex items-center gap-1">
-                <Loader2 size={9} className="animate-spin" /> Translating…
+                <Loader2 size={9} className="animate-spin" />
+                {job.translate.status === "queued" ? "Queued…" : `Translating to ${languageName(lang)}…`}
               </span>
               <span className="font-mono">{translatePct}%</span>
             </div>
@@ -212,6 +209,12 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
           <span>{timeAgo(job.createdAt)}</span>
           <span>·</span>
           <span className="font-mono">{job.id.slice(0, 8)}</span>
+          {job.targetLang && (
+            <>
+              <span>·</span>
+              <span>{languageName(job.targetLang)}{job.aiMode ? " (AI)" : ""}</span>
+            </>
+          )}
         </div>
 
         {/* Status badges */}
@@ -233,12 +236,14 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
       <AlertDialog open={showTranslateDialog} onOpenChange={setShowTranslateDialog}>
         <AlertDialogContent onClick={(e) => e.stopPropagation()}>
           <AlertDialogHeader>
-            <AlertDialogTitle>Translate with AI?</AlertDialogTitle>
+            <AlertDialogTitle>Retranslate</AlertDialogTitle>
             <AlertDialogDescription>
-              AI groups blocks semantically before translating — better for
-              keyword-style videos. Requires an OpenAI API key and takes a bit longer.
+              This replaces the current translations, including edits made in the editor.
+              AI mode translates whole sentences with context — better for keyword-style
+              videos. It needs an OpenAI API key and takes a bit longer.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          <LanguageSelect value={lang} onChange={setLang} />
           <AlertDialogFooter>
             <AlertDialogCancel
               onClick={() => {
@@ -291,9 +296,13 @@ export default function Dashboard({ onOpenJob, onNewJob }: {
     setJobs((prev) => prev.filter((j) => j.id !== id))
   }
 
-  const retranslateJob = async (id: string, useAi: boolean = false) => {
-    const res = await fetch(`/api/run/translate?jobId=${id}&ai=${useAi}`, { method: "POST" })
-    if (!res.ok) throw new Error("Failed to start translation")
+  const retranslateJob = async (id: string, useAi: boolean, lang: string) => {
+    const res = await fetch(
+      `/api/run/translate?jobId=${id}&ai=${useAi}&lang=${encodeURIComponent(lang)}`,
+      { method: "POST" },
+    )
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? "Failed to start translation")
+    setJobs((prev) => prev.map((j) => j.id === id ? { ...j, targetLang: lang, aiMode: useAi } : j))
 
     return new Promise<void>((resolve, reject) => {
       const iv = setInterval(async () => {

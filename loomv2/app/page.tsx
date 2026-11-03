@@ -29,10 +29,7 @@ export default function Root() {
         key={uploadModalOpen ? "open" : "closed"}
         isOpen={uploadModalOpen}
         onClose={() => setUploadModalOpen(false)}
-        onReady={(jobId) => {
-          setUploadModalOpen(false)
-          // setScreen({ view: "editor", jobId })
-        }}
+        onReady={() => setUploadModalOpen(false)}
       />
     </>
   )

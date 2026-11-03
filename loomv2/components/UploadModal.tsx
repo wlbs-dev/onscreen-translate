@@ -14,6 +14,9 @@ import { Progress } from "@/components/ui/progress"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Separator } from "@/components/ui/separator"
 import { cn } from "@/lib/utils"
+import { Label } from "@/components/ui/label"
+import LanguageSelect, { rememberedLang } from "@/components/LanguageSelect"
+import { languageName } from "@/lib/languages"
 
 type Stage = "idle" | "uploading" | "ocr" | "translate" | "done" | "error"
 
@@ -51,13 +54,8 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
   const [progress, setProgress] = useState(0)
   const [dragOver, setDragOver] = useState(false)
   const [errorMsg, setErrorMsg] = useState("")
-
-  useEffect(() => {
-    if (isOpen) {
-      setFile(null); setStage("idle"); setLogLines([])
-      setProgress(0); setErrorMsg(""); setDragOver(false)
-    }
-  }, [isOpen])
+  // The parent remounts this modal on every open (key), so state starts fresh
+  const [lang, setLang]         = useState(rememberedLang)
 
   // Auto-scroll log
   useEffect(() => {
@@ -89,7 +87,8 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
       const iv = setInterval(async () => {
         try {
           const data = await fetch(url).then((r) => r.json())
-          if (data.log?.length) onLog(data.log[data.log.length - 1])
+          if (data.status === "queued" && data.message) onLog(data.message)
+          else if (data.log?.length) onLog(data.log[data.log.length - 1])
           if (data.progress)    onProgress(data.progress)
           if (data.status === "done")  { clearInterval(iv); resolve() }
           if (data.status === "error") { clearInterval(iv); reject(new Error(data.message || "Script failed")) }
@@ -116,21 +115,25 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
       appendLog("OCR complete."); setProgress(55)
 
       setStage("translate"); appendLog("Starting translation…")
-      const trRes = await fetch(`/api/run/translate?jobId=${jobId}&ai=${useAI}`, { method: "POST" })
+      appendLog(`Target language: ${languageName(lang)}`)
+      const trRes = await fetch(
+        `/api/run/translate?jobId=${jobId}&ai=${useAI}&lang=${encodeURIComponent(lang)}`,
+        { method: "POST" },
+      )
       if (!trRes.ok) throw new Error(await trRes.text())
       await pollUntilDone(`/api/run/translate/status?jobId=${jobId}`, appendLog, (p) => setProgress(55 + p * 0.44))
       appendLog("Translation complete."); setProgress(100)
 
       setStage("done")
       setTimeout(() => onReady(jobId), 800)
-    } catch (err: any) {
-      setStage("error"); setErrorMsg(err?.message ?? "Unknown error")
-      appendLog(`ERROR: ${err?.message}`)
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error"
+      setStage("error"); setErrorMsg(msg)
+      appendLog(`ERROR: ${msg}`)
     }
   }
 
   const currentIdx   = stageOrder.indexOf(stage)
-  const isProcessing = stage !== "idle" && stage !== "done" && stage !== "error"
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -205,14 +208,23 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                 </Alert>
               )}
 
+              <div className="space-y-1.5">
+                <Label htmlFor="upload-lang" className="text-xs">Translate on-screen text into</Label>
+                <LanguageSelect id="upload-lang" value={lang} onChange={setLang} />
+              </div>
+
               <div className="flex gap-2">
-  <Button className="flex-1" onClick={() => handleTranslate(false)}>
-    Start Processing
-  </Button>
-  <Button className="flex-1" variant="secondary" onClick={() => handleTranslate(true)}>
-    Use AI
-  </Button>
-</div>
+                <Button className="flex-1" onClick={() => handleTranslate(false)}>
+                  Start Processing
+                </Button>
+                <Button className="flex-1" variant="secondary" onClick={() => handleTranslate(true)}>
+                  Use AI
+                </Button>
+              </div>
+              <p className="text-[11px] text-muted-foreground leading-relaxed">
+                <span className="font-medium">Use AI</span> translates whole sentences with context and
+                splits them back across the boxes — better for infographic or keyword-style videos.
+              </p>
             </div>
           )}
 
