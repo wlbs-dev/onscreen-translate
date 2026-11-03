@@ -320,12 +320,12 @@ export default function Timeline({
           >
             {ticks.map(({ t, px, label }) => (
               <g key={t}>
-                <line x1={px} y1={RULER_H - 7} x2={px} y2={RULER_H} stroke="hsl(var(--border))" strokeWidth={1} />
-                <text x={px + 3} y={RULER_H - 9} fill="hsl(var(--muted-foreground))" fontSize={9} fontFamily="monospace">{label}</text>
+                <line x1={px} y1={RULER_H - 7} x2={px} y2={RULER_H} style={{ stroke: "var(--border)" }} strokeWidth={1} />
+                <text x={px + 3} y={RULER_H - 9} style={{ fill: "var(--muted-foreground)" }} fontSize={9} fontFamily="monospace">{label}</text>
               </g>
             ))}
-            <line x1={playheadPx} y1={0} x2={playheadPx} y2={RULER_H} stroke="hsl(var(--primary))" strokeWidth={1.5} />
-            <polygon points={`${playheadPx - 5},0 ${playheadPx + 5},0 ${playheadPx},8`} fill="hsl(var(--primary))" />
+            <line x1={playheadPx} y1={0} x2={playheadPx} y2={RULER_H} style={{ stroke: "var(--primary)" }} strokeWidth={1.5} />
+            <polygon points={`${playheadPx - 5},0 ${playheadPx + 5},0 ${playheadPx},8`} style={{ fill: "var(--primary)" }} />
           </svg>
 
           {/* Snap guide */}
@@ -344,7 +344,7 @@ export default function Timeline({
             <div style={{
               position: "absolute", top: 0, bottom: 0,
               left: playheadPx, width: 1.5,
-              background: "hsl(var(--primary))", opacity: 0.4,
+              background: "var(--primary)", opacity: 0.4,
               pointerEvents: "none", zIndex: 10,
             }} />
 
@@ -359,9 +359,9 @@ export default function Timeline({
                   right: 0,
                   height: TRACK_H,
                   background: i % 2 === 0
-                    ? "hsl(var(--muted) / 0.15)"
-                    : "hsl(var(--background))",
-                  borderBottom: "1px solid hsl(var(--border) / 0.4)",
+                    ? "color-mix(in oklch, var(--muted) 60%, transparent)"
+                    : "var(--background)",
+                  borderBottom: "1px solid color-mix(in oklch, var(--border) 60%, transparent)",
                 }}
               />
             ))}
