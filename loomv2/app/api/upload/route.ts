@@ -16,9 +16,11 @@ const maxUploadBytes = () => Number(process.env.MAX_UPLOAD_MB ?? 500) * 1024 * 1
 function quotaExceeded(usedSec: number, quotaMin: number, videoSec: number | null) {
   const resets = new Date(monthBounds().end).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })
   const left = Math.max(0, quotaMin - usedSec / 60)
+  const leftText = left > 0 && left < 0.1 ? "less than 0.1" : String(toMinutes(left * 60))
+  const videoText = videoSec != null && videoSec < 6 ? `${Math.round(videoSec)} s` : `${toMinutes(videoSec ?? 0)} min`
   const error = videoSec == null
     ? `You've used all ${quotaMin} minutes of your monthly quota. It resets on ${resets}.`
-    : `This video is ${toMinutes(videoSec)} min, but you have ${toMinutes(left * 60)} of your ${quotaMin} monthly minutes left. Your quota resets on ${resets}.`
+    : `This video is ${videoText}, but you have ${leftText} of your ${quotaMin} monthly minutes left. Your quota resets on ${resets}.`
   return NextResponse.json({
     error,
     code: "quota_exceeded",
