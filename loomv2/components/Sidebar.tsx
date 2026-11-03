@@ -10,6 +10,7 @@ import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { OverlayEvent } from "./VideoPlayer"
 import { effectiveFontSize, isAutoFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX } from "@/lib/editor/fontSize"
+import { effectiveBg, effectiveText, isHex } from "@/lib/editor/colors"
 
 interface SidebarProps {
   event: OverlayEvent | null
@@ -33,23 +34,34 @@ function fmt(t: number) {
 
 function uid() { return Math.random().toString(36).slice(2) }
 
-function ColorRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
+// `value` is the user's override ("" = auto); `effective` is what will render
+function ColorRow({ label, value, effective, autoHint, onChange }: {
+  label: string; value: string | undefined; effective: string; autoHint: string
+  onChange: (v: string) => void
+}) {
+  const auto = !isHex(value)
   return (
     <div className="space-y-1.5">
-      <Label className="text-xs">{label}</Label>
+      <div className="flex items-center gap-2">
+        <Label className="text-xs">{label}</Label>
+        {auto
+          ? <Badge variant="secondary" className="text-[10px]" title={autoHint}>Auto</Badge>
+          : <button type="button" className="text-[10px] text-muted-foreground underline-offset-2 hover:underline"
+              onClick={() => onChange("")}>Reset to auto</button>}
+      </div>
       <div className="flex gap-2 items-center">
         <label className="relative shrink-0 cursor-pointer">
-          <input type="color" value={value} onChange={(e) => onChange(e.target.value)} className="sr-only" />
+          <input type="color" value={effective} onChange={(e) => onChange(e.target.value)} className="sr-only" />
           <div
             className="w-8 h-8 rounded-md border shadow-sm"
-            style={{ background: value }}
+            style={{ background: effective }}
           />
         </label>
         <Input
-          value={value}
+          value={auto ? effective : value}
           maxLength={7}
           onChange={(e) => onChange(e.target.value)}
-          className="font-mono uppercase text-xs h-8"
+          className={`font-mono uppercase text-xs h-8 ${auto ? "text-muted-foreground" : ""}`}
         />
       </div>
     </div>
@@ -66,7 +78,7 @@ function EventList({ events, currentTime, duration, onSelect, onAdd }: {
   function handleAdd() {
     const newEvent: OverlayEvent = {
       id: uid(), blockText: "New Box", translation: "",
-      bbox: [100, 100, 400, 160], bgColor: "#000000", textColor: "#ffffff",
+      bbox: [100, 100, 400, 160], bgColor: "", textColor: "",
       startTime: Math.max(0, currentTime),
       endTime: Math.min(duration, currentTime + 3), frameIndex: 0,
     }
@@ -108,7 +120,7 @@ function EventList({ events, currentTime, duration, onSelect, onAdd }: {
               >
                 <div
                   className="w-2.5 h-5 rounded-sm shrink-0 border"
-                  style={{ background: ev.bgColor }}
+                  style={{ background: effectiveBg(ev) }}
                 />
                 <div className="flex-1 min-w-0">
                   <div className="text-xs font-medium truncate text-muted-foreground">{ev.blockText}</div>
@@ -190,13 +202,17 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
         <Separator />
 
         {/* Colors */}
-        <ColorRow label="Background color" value={event.bgColor || "#000000"} onChange={(v) => onUpdate({ bgColor: v })} />
-        <ColorRow label="Text color" value={event.textColor || "#ffffff"} onChange={(v) => onUpdate({ textColor: v })} />
+        <ColorRow label="Background color" value={event.bgColor} effective={effectiveBg(event)}
+          autoHint="Sampled from the video around the box"
+          onChange={(v) => onUpdate({ bgColor: v })} />
+        <ColorRow label="Text color" value={event.textColor} effective={effectiveText(event)}
+          autoHint="White or black, whichever contrasts with the background"
+          onChange={(v) => onUpdate({ textColor: v })} />
 
         {/* Preview */}
         <div
           className="px-3 py-2 rounded-md text-center truncate font-semibold text-sm border"
-          style={{ background: event.bgColor || "#000000", color: event.textColor || "#ffffff" }}
+          style={{ background: effectiveBg(event), color: effectiveText(event) }}
         >
           {event.translation || event.blockText || "Preview"}
         </div>

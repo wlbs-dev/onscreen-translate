@@ -4,6 +4,7 @@ import { useRef, useEffect, useCallback, useState } from "react"
 import type { OverlayEvent } from "@/lib/editor/types"
 import { effectiveFontSize } from "@/lib/editor/fontSize"
 import { INDIC_FONT_STACK, loadIndicFonts } from "@/lib/editor/indicFonts"
+import { effectiveBg, effectiveText } from "@/lib/editor/colors"
 
 interface Props {
   events: OverlayEvent[]
@@ -77,7 +78,7 @@ export default function OverlayCanvas({
       }
 
       ctx.globalAlpha = 0.85
-      ctx.fillStyle = event.bgColor || "#000000"
+      ctx.fillStyle = effectiveBg(event)
       ctx.fillRect(sx, sy, patchW, sh)
       ctx.globalAlpha = 1
 
@@ -86,7 +87,7 @@ export default function OverlayCanvas({
       ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1)
 
       if (event.translation) {
-        ctx.fillStyle = event.textColor || "#ffffff"
+        ctx.fillStyle = effectiveText(event)
         ctx.textBaseline = "middle"
         ctx.save()
         ctx.beginPath()

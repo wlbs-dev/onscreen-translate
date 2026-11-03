@@ -19,7 +19,7 @@ interface Block {
   id: string; text: string; translation: string
   bbox: [number, number, number, number]; conf: number
   words: { text: string; bbox: [number, number, number, number]; conf: number }[]
-  bgColor: string; textColor: string; fontSize?: number
+  bgColor?: string; textColor?: string; autoBgColor?: string; fontSize?: number
 }
 interface Frame {
   frame_index: number; timestamp: number; frame_path: string; blocks: Block[]
@@ -36,8 +36,11 @@ function addIds(frames: Frame[]): Frame[] {
     blocks: (f.blocks as RawBlock[]).map((b) => ({
       ...b,
       id: b.id || uid(),
-      bgColor: b.bgColor || b.color || "#000000",
-      textColor: b.textColor || "#ffffff",
+      // No defaults: unset colours mean "auto" (sampled background,
+      // contrasting text). Defaulting to black/white here used to get saved
+      // back and force black patches on every render.
+      bgColor: b.bgColor || b.color || "",
+      textColor: b.textColor || "",
       // No default: an unset fontSize means "auto" (fit to box) in preview and render
       fontSize: b.fontSize,
     })),
@@ -64,7 +67,8 @@ function buildEvents(frames: Frame[], videoDuration: number): OverlayEvent[] {
         active[key] = {
           id: block.id || uid(), blockText: block.text, translation: block.translation,
           bbox: [...block.bbox] as [number, number, number, number],
-          bgColor: block.bgColor || "#000000", textColor: block.textColor || "#ffffff",
+          bgColor: block.bgColor || "", textColor: block.textColor || "",
+          autoBgColor: block.autoBgColor,
           fontSize: block.fontSize,
           startTime: Math.max(0, ts - 0.5), endTime: nextTs, frameIndex: frame.frame_index,
         }
@@ -323,7 +327,10 @@ export default function Editor({ jobId, onBack }: EditorProps) {
             id: ev.id, text: ev.blockText, translation: ev.translation,
             bbox: ev.bbox, conf: origBlock?.conf ?? 1.0,
             words: origBlock?.words ?? [],
-            bgColor: ev.bgColor, textColor: ev.textColor, fontSize: ev.fontSize,
+            // undefined is dropped by JSON.stringify, so auto stays unset on disk
+            bgColor: ev.bgColor || undefined, textColor: ev.textColor || undefined,
+            autoBgColor: origBlock?.autoBgColor ?? ev.autoBgColor,
+            fontSize: ev.fontSize,
           }
         })
       return {

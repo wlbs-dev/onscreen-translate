@@ -269,7 +269,7 @@ export default function Timeline({
   const handleAddAtTime = useCallback(() => {
     const newEvent: OverlayEvent = {
       id: uid(), blockText: "New Box", translation: "",
-      bbox: [100, 100, 400, 160], bgColor: "#000000", textColor: "#ffffff",
+      bbox: [100, 100, 400, 160], bgColor: "", textColor: "",
       startTime: Math.max(0, currentTime),
       endTime: Math.min(duration, currentTime + 3), frameIndex: 0,
     }

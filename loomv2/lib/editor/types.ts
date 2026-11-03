@@ -4,7 +4,10 @@
 export interface OverlayEvent {
   id: string; blockText: string; translation: string
   bbox: [number, number, number, number]
-  bgColor: string; textColor: string
+  /** User-chosen colours. Empty/unset → auto (see colors.ts); only these are overrides */
+  bgColor?: string; textColor?: string
+  /** Background sampled by OCR around the original box, for the preview */
+  autoBgColor?: string
   /** Explicit font size in video pixels. Unset (or 0) → auto-fit to box height, see fontSize.ts */
   fontSize?: number
   startTime: number; endTime: number; frameIndex: number

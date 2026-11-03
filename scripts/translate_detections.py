@@ -376,6 +376,14 @@ def translate_bucket_original(bucket: list[dict], cache: dict) -> dict[str, str]
     return word_to_translation
 
 
+# OCR fields that must survive translation (the editor preview uses them)
+PASSTHROUGH_FIELDS = ("autoBgColor",)
+
+
+def _passthrough(block: dict) -> dict:
+    return {k: block[k] for k in PASSTHROUGH_FIELDS if k in block}
+
+
 def apply_mapping_original(frame: dict, word_to_translation: dict) -> list[dict]:
     translated_blocks = []
     for block in frame["blocks"]:
@@ -388,6 +396,7 @@ def apply_mapping_original(frame: dict, word_to_translation: dict) -> list[dict]
                 "bbox":        block["bbox"],
                 "conf":        block["conf"],
                 "words":       block["words"],
+                **_passthrough(block),
             })
             continue
 
@@ -405,6 +414,7 @@ def apply_mapping_original(frame: dict, word_to_translation: dict) -> list[dict]
             "bbox":        block["bbox"],
             "conf":        block["conf"],
             "words":       clean_words,
+            **_passthrough(block),
         })
 
     return translated_blocks
@@ -464,6 +474,7 @@ def apply_mapping_ai(frame: dict, text_to_translation: dict) -> list[dict]:
             "conf":        block["conf"],
             "words":       block.get("words", []),
             "merged":      False,
+            **_passthrough(block),
         })
 
     return translated_blocks
