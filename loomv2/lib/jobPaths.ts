@@ -3,9 +3,9 @@ import path from "path"
 import fs from "fs"
 import { execSync } from "child_process"
 
-// Resolve from the cwd (loomv2/) — __dirname points into .next/ once bundled
-export const WORKSPACE = process.env.WORKSPACE_DIR
-  ?? path.resolve(process.cwd(), "..", "workspace")
+import { WORKSPACE } from "./workspace"
+
+export { WORKSPACE }
 
 // Relative to the app (loomv2/../scripts), not to WORKSPACE: moving the
 // workspace (WORKSPACE_DIR) must not move where the scripts are found
