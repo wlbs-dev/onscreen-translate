@@ -1,6 +1,8 @@
 # translate-video
 
-A full-stack tool that takes a video, detects on-screen English text via OCR, translates it to Marathi, and renders the translated text back onto the video as overlays — with a web UI to review, edit, and fine-tune every text box.
+A full-stack tool that takes a video, detects on-screen English text via OCR, translates it into one of 10 Indian languages, and renders the translated text back onto the video as overlays — with a web UI to review, edit, and fine-tune every text box.
+
+**Languages:** Hindi, Marathi, Bengali, Gujarati, Punjabi, Kannada, Malayalam, Odia, Tamil, Telugu (Sarvam `mayura:v1` codes, listed in `scripts/languages.py` and `loomv2/lib/languages.ts`).
 
 ---
 
@@ -10,8 +12,8 @@ A full-stack tool that takes a video, detects on-screen English text via OCR, tr
 Video → OCR → Translation → Render → Output video
 ```
 
-1. **OCR** — extracts text blocks from every frame, with bounding boxes and confidence scores
-2. **Translation** — translates detected text to Marathi via Sarvam AI (or OpenAI-assisted for better quality)
+1. **OCR** — extracts text blocks from every frame, with bounding boxes and confidence scores (frames identical to the previous one are skipped)
+2. **Translation** — translates detected text into the chosen language via Sarvam AI (or OpenAI-assisted for better quality)
 3. **Render** — burns translated overlays back onto the video at the correct positions and timestamps
 4. **Editor UI** — a Next.js dashboard to review jobs, edit overlay text/timing/style, and retranslate
 
@@ -24,8 +26,8 @@ Video → OCR → Translation → Render → Output video
 | Frontend | Next.js (App Router), React, Tailwind, shadcn/ui |
 | OCR | Python script using PaddleOCR (frames extracted with ffmpeg) |
 | Translation | Sarvam AI (`mayura:v1`) + optional OpenAI (`gpt-4o-mini`) grouping |
-| Rendering | Python + Playwright (text), OpenCV / Pillow (compositing), ffmpeg (encode) |
-| Job management | Node.js file-based job store |
+| Rendering | Python + Playwright (text, bundled Noto Sans Indic fonts), OpenCV / Pillow (compositing), ffmpeg (encode) |
+| Job management | Node.js file-based job store + in-process queue |
 
 ---
 
@@ -84,13 +86,14 @@ Open [http://localhost:3000](http://localhost:3000). The server binds to `127.0.
 
 ### Web UI
 
-1. Click **Add Video** and upload a video
-2. OCR runs automatically on upload
-3. Once OCR completes, click **Retranslate** on the video card
-4. Choose **Without AI** (faster, word-mapping via Sarvam) or **Use AI** (better quality, uses OpenAI to group and translate full sentences before splitting back to blocks)
-5. Once translation completes, open the video to review overlays in the editor
-6. Adjust timing, text, font size, and colors on the timeline
-7. Render the final output video
+1. Click **Add Video**, pick a video and the target language
+2. Choose **Start Processing** (Sarvam word-mapping) or **Use AI** (OpenAI groups and translates full sentences before splitting back to blocks). OCR and translation run back to back
+3. To change language or mode later, use **Retranslate** in the video card's menu (this replaces editor changes)
+4. Open the video to review overlays in the editor
+5. Adjust timing, text, font size, and colors on the timeline — press **?** for keyboard shortcuts
+6. Render the final output video
+
+Stages run through a queue (`MAX_CONCURRENT_JOBS`, default 1), so a second upload waits instead of competing for CPU.
 
 ### Python scripts (direct)
 
@@ -105,9 +108,9 @@ cd scripts
 python ocr_annotate.py --input path/to/video.mp4 --output-dir annotated/
 ```
 
-**Translation — standard:**
+**Translation — standard** (`--target-lang` defaults to `mr-IN`):
 ```bash
-python translate_detections.py --detections annotated/ocr_detections.json
+python translate_detections.py --detections annotated/ocr_detections.json --target-lang hi-IN
 ```
 
 **Translation — AI-assisted (better for keyword/infographic style videos):**
@@ -127,38 +130,35 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 ### Standard (Sarvam only)
 - Collects all visible words from the last frame of each scene bucket
 - Joins them into a sentence and sends to Sarvam AI
-- Maps Marathi words back to blocks positionally
+- Maps translated words back to blocks positionally
 - Works well when full sentences appear on screen
 
 ### AI-assisted (`--ai`)
 - Uses the last frame of each bucket (when all text is visible) for translation
-- Sends blocks to OpenAI with instructions to translate the full meaning naturally, then split the Marathi output proportionally across the original block count
-- Each block gets its own Marathi chunk rendered at its original screen position
+- Sends blocks to OpenAI with instructions to translate the full meaning naturally, then split the translation proportionally across the original block count
+- Each block gets its own translated chunk rendered at its original screen position
 - Works much better for infographic/keyword-style videos where words are spread across visual elements
 - Falls back to Sarvam for any block OpenAI misses
 
-**Translation cache** is stored at `scripts/cache/translation_cache.json` (created on first run, gitignored) to avoid redundant API calls. Delete it to force a fresh translation.
+**Translation cache** is stored at `scripts/cache/translation_cache.json` (created on first run, gitignored) to avoid redundant API calls. Keys are scoped by target language. Delete it to force a fresh translation.
 
 ---
 
-## Features to add / improve 
+## Roadmap
+
+**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · optional password gate · Docker image
 
 **OCR + Translation**
-- Support more target languages beyond Marathi, with a language picker in the UI
+- Standard mode maps translated words back to blocks by position, which breaks for SOV languages when a sentence spans several boxes — translate per block with sentence context instead
+- Inpaint the original text (instead of a flat colour patch) for gradient / photo backgrounds
 - Cache invalidation UI — right now you have to manually delete the cache file
-- Skip duplicate frames before OCR instead of processing every frame — most frames in a bucket are identical
+- Translate into several languages from one OCR pass
 
-**Timeline + Editor + UI**
-- Undo/redo support
-- Keyboard shortcuts (space to play/pause, arrow keys to nudge timing)
-- Snap to grid when dragging clips
-- Bulk select and move multiple clips at once
-- Auto font size based on bounding box size instead of fixed size
-
-**Infrastructure**
-- Jobs are lost on server restart since the store is file-based with no DB — add SQLite or similar
-- No queue — multiple concurrent translation/render jobs will compete for resources
-- No cleanup — workspace fills up indefinitely, needs a job expiry/delete policy
+**Infrastructure (for multi-user hosting)**
+- Real accounts and per-user / per-team job isolation (today there is one shared password)
+- Postgres instead of JSON job files; object storage for videos
+- A worker process (separate from the web server) consuming a durable queue, with GPU OCR
+- Usage metering and billing per processed minute
 
 ## Project structure
 
@@ -186,16 +186,22 @@ onscreen-translate/
 │   │   ├── Sidebar.tsx             # Event list + overlay editor
 │   │   ├── UploadModal.tsx         # Upload → OCR → translate
 │   │   └── Header.tsx
-│   └── lib/
-│       ├── jobStore.ts             # File-based job persistence
-│       ├── jobPaths.ts             # Workspace path helpers, jobId validation
-│       └── runScript.ts            # Python script runner with log streaming
+│   ├── lib/
+│   │   ├── jobStore.ts             # File-based job persistence, restart recovery, retention
+│   │   ├── jobPaths.ts             # Workspace path helpers, jobId validation
+│   │   ├── runScript.ts            # Queued Python script runner with log streaming
+│   │   ├── languages.ts            # Target languages (mirror of scripts/languages.py)
+│   │   ├── auth.ts                 # Optional APP_PASSWORD session check
+│   │   └── editor/                 # Undo history, font sizing, preview fonts
+│   ├── proxy.ts                    # Auth gate (Next 16's renamed middleware)
+│   └── instrumentation.ts          # Startup: recover interrupted jobs, sweep expired ones
 ├── scripts/
 │   ├── ocr_annotate.py
 │   ├── translate_detections.py
 │   ├── render_translations.py
+│   ├── languages.py                # Target languages + fonts
 │   ├── requirements.txt
-│   ├── assets/                     # Noto Devanagari fonts (OFL)
+│   ├── assets/                     # Noto Sans Indic fonts (OFL)
 │   └── cache/translation_cache.json  # Created at runtime (gitignored)
 ├── workspace/                      # Runtime data (gitignored)
 │   ├── jobs/<jobId>.json           # Job status + logs
@@ -220,6 +226,8 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 - **Drag edges** to resize start/end times
 - **Ctrl + scroll** to zoom in/out
 - **Click the ruler** to seek
+- **Shift/Ctrl + click** to multi-select; edges snap to the playhead and other clips (hold **Alt** to disable)
+- **Ctrl+Z / Ctrl+Shift+Z** undo/redo, **Space** play/pause, **Alt+←/→** nudge, **?** for all shortcuts
 
 ---
 
@@ -232,12 +240,23 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 
 ---
 
+## Deploying
+
+```bash
+docker build -t onscreen-translate .
+docker run -p 3000:3000 -v ot-data:/data --env-file .env onscreen-translate
+```
+
+The image bundles Node, Python, ffmpeg, Chromium and the PaddleOCR English models, keeps jobs in the `/data` volume, and exposes `GET /api/health`. It listens on all interfaces, so it **refuses to start without `APP_PASSWORD`** (set `ALLOW_NO_AUTH=1` only if another auth layer sits in front). Without Docker, `npm run build && npm run start:public` does the same. All settings are listed in `.env.example`.
+
 ## Security
 
-This is a local, single-user tool. The API has **no authentication**: anyone who can reach the server can upload files, run OCR/translation (spending your Sarvam/OpenAI credits), and read or delete jobs. That's why `npm run dev` / `npm start` bind to `127.0.0.1`. Don't expose it on a network or deploy it publicly without putting auth in front of it.
+By default this is a local, single-user tool with **no authentication**: anyone who can reach the server can upload files, run OCR/translation (spending your Sarvam/OpenAI credits), and read or delete jobs. That's why `npm run dev` / `npm start` bind to `127.0.0.1`.
+
+Setting `APP_PASSWORD` puts every page and API route behind a login (`loomv2/proxy.ts`); the session cookie is an HMAC of the password, so changing it signs everyone out. It is one shared password, not per-user accounts — fine for a team or a pilot customer, not for open sign-ups.
 
 ---
 
 ## License
 
-[MIT](LICENSE). The bundled Noto Devanagari fonts are under the [SIL Open Font License](scripts/assets/OFL.txt).
+[MIT](LICENSE). The bundled Noto fonts are under the [SIL Open Font License](scripts/assets/OFL.txt).
