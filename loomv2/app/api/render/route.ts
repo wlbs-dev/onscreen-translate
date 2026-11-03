@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { existsSync } from "fs"
 import { getJob } from "../../../lib/jobStore"
 import { jobPaths, getPython, SCRIPTS_DIR } from "../../../lib/jobPaths"
-import { runScript } from "../../../lib/runScript"
+import { isBusy, runScript } from "../../../lib/runScript"
 import path from "path"
 
 export const runtime = "nodejs"
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
   const job = getJob(jobId)
   if (!job) return NextResponse.json({ error: "Job not found" }, { status: 404 })
 
-  if (job.render.status === "running") {
-    return NextResponse.json({ error: "Render already running" }, { status: 400 })
+  if (isBusy(jobId, "render")) {
+    return NextResponse.json({ error: "Render already running" }, { status: 409 })
   }
 
   const paths = jobPaths(jobId)
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     }, { status: 400 })
   }
 
-  // Fire and forget — client will poll /api/render/status
+  // Queued fire-and-forget — client will poll /api/render/status
   runScript({
     jobId,
     stage: "render",

@@ -26,8 +26,8 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "input_video.mp4 not found — did upload succeed?" }, { status: 400 })
   }
 
-  // Fire and forget — client will poll /api/run/ocr/status
-  runScript({
+  // Queued fire-and-forget — client will poll /api/run/ocr/status
+  const started = runScript({
     jobId,
     stage: "ocr",
     python: getPython(),
@@ -40,5 +40,6 @@ export async function POST(req: NextRequest) {
     cwd: SCRIPTS_DIR,
   })
 
+  if (!started) return NextResponse.json({ error: "OCR is already running for this job" }, { status: 409 })
   return NextResponse.json({ jobId, status: "started" })
 }
