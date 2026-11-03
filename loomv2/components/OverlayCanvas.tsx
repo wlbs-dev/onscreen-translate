@@ -2,6 +2,7 @@
 
 import { useRef, useEffect, useCallback } from "react"
 import type { OverlayEvent } from "@/lib/editor/types"
+import { effectiveFontSize } from "@/lib/editor/fontSize"
 
 interface Props {
   events: OverlayEvent[]
@@ -64,7 +65,8 @@ export default function OverlayCanvas({
       ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1)
 
       if (event.translation) {
-        const fs = Math.max(8, (event.fontSize ?? 20) * s)
+        // Explicit size, or the renderer's auto rule (fit to box height), in video px
+        const fs = Math.max(8, effectiveFontSize(event) * s)
         ctx.font = `600 ${fs}px "Inter", system-ui, sans-serif`
         ctx.fillStyle = event.textColor || "#ffffff"
         ctx.textBaseline = "middle"

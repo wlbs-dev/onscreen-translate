@@ -27,15 +27,19 @@ interface Frame {
 
 function uid() { return Math.random().toString(36).slice(2) }
 
+// Older files may use `color` instead of `bgColor`
+type RawBlock = Partial<Block> & Pick<Block, "text" | "translation" | "bbox" | "conf" | "words"> & { color?: string }
+
 function addIds(frames: Frame[]): Frame[] {
   return frames.map((f) => ({
     ...f,
-    blocks: f.blocks.map((b) => ({
+    blocks: (f.blocks as RawBlock[]).map((b) => ({
       ...b,
       id: b.id || uid(),
-      bgColor: (b as any).bgColor || (b as any).color || "#000000",
-      textColor: (b as any).textColor || "#ffffff",
-      fontSize: b.fontSize ?? 20,
+      bgColor: b.bgColor || b.color || "#000000",
+      textColor: b.textColor || "#ffffff",
+      // No default: an unset fontSize means "auto" (fit to box) in preview and render
+      fontSize: b.fontSize,
     })),
   }))
 }
@@ -61,7 +65,7 @@ function buildEvents(frames: Frame[], videoDuration: number): OverlayEvent[] {
           id: block.id || uid(), blockText: block.text, translation: block.translation,
           bbox: [...block.bbox] as [number, number, number, number],
           bgColor: block.bgColor || "#000000", textColor: block.textColor || "#ffffff",
-          fontSize: block.fontSize ?? 20,
+          fontSize: block.fontSize,
           startTime: Math.max(0, ts - 0.5), endTime: nextTs, frameIndex: frame.frame_index,
         }
       }

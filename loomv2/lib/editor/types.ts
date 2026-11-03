@@ -4,7 +4,9 @@
 export interface OverlayEvent {
   id: string; blockText: string; translation: string
   bbox: [number, number, number, number]
-  bgColor: string; textColor: string; fontSize: number
+  bgColor: string; textColor: string
+  /** Explicit font size in video pixels. Unset (or 0) → auto-fit to box height, see fontSize.ts */
+  fontSize?: number
   startTime: number; endTime: number; frameIndex: number
 }
 

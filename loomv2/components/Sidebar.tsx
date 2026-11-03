@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Separator } from "@/components/ui/separator"
 import { Badge } from "@/components/ui/badge"
 import { OverlayEvent } from "./VideoPlayer"
+import { effectiveFontSize, isAutoFontSize, FONT_SIZE_MIN, FONT_SIZE_MAX } from "@/lib/editor/fontSize"
 
 interface SidebarProps {
   event: OverlayEvent | null
@@ -66,7 +67,7 @@ function EventList({ events, currentTime, duration, onSelect, onAdd }: {
     const newEvent: OverlayEvent = {
       id: uid(), blockText: "New Box", translation: "",
       bbox: [100, 100, 400, 160], bgColor: "#000000", textColor: "#ffffff",
-      fontSize: 20, startTime: Math.max(0, currentTime),
+      startTime: Math.max(0, currentTime),
       endTime: Math.min(duration, currentTime + 3), frameIndex: 0,
     }
     onAdd(newEvent)
@@ -142,7 +143,10 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
     onUpdate({ bbox })
   }
 
-  const fontSize = event.fontSize ?? 20
+  // Unset fontSize = auto (fit to box height, same rule as the renderer).
+  // The stepper starts from the auto value; any change makes it explicit.
+  const autoSize = isAutoFontSize(event)
+  const fontSize = effectiveFontSize(event)
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
@@ -201,15 +205,21 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
 
         {/* Font size */}
         <div className="space-y-2">
-          <Label className="text-xs">Font size</Label>
+          <div className="flex items-center gap-2">
+            <Label className="text-xs">Font size</Label>
+            {autoSize && <Badge variant="secondary" className="text-[10px]">Auto</Badge>}
+          </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="icon" className="h-8 w-8 shrink-0"
-              onClick={() => onUpdate({ fontSize: Math.max(0, fontSize - 1) })}>
+              onClick={() => onUpdate({ fontSize: Math.max(1, fontSize - 1) })}>
               <Minus size={12} />
             </Button>
             <Input
-              type="number" min={0} max={400} value={fontSize}
-              onChange={(e) => onUpdate({ fontSize: Math.max(0, Math.min(400, parseInt(e.target.value) || 0)) })}
+              type="number" min={1} max={400} value={fontSize}
+              onChange={(e) => {
+                const v = parseInt(e.target.value)
+                if (Number.isFinite(v) && v > 0) onUpdate({ fontSize: Math.min(400, v) })
+              }}
               className="text-center text-xs h-8 font-mono"
             />
             <Button variant="outline" size="icon" className="h-8 w-8 shrink-0"
@@ -219,9 +229,17 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
             <span className="text-xs text-muted-foreground">px</span>
           </div>
           <div className="flex gap-1 flex-wrap">
+            <Button
+              size="sm" variant={autoSize ? "default" : "outline"}
+              className="h-6 px-2 text-[11px]"
+              onClick={() => onUpdate({ fontSize: undefined })}
+              title="Fit text to the box height"
+            >
+              Auto
+            </Button>
             {[12, 16, 20, 24, 32, 48].map((s) => (
               <Button
-                key={s} size="sm" variant={fontSize === s ? "default" : "outline"}
+                key={s} size="sm" variant={!autoSize && fontSize === s ? "default" : "outline"}
                 className="h-6 px-2 text-[11px]"
                 onClick={() => onUpdate({ fontSize: s })}
               >
@@ -229,6 +247,11 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
               </Button>
             ))}
           </div>
+          {autoSize && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Sized to 55% of the box height ({FONT_SIZE_MIN}–{FONT_SIZE_MAX}px), as in the render.
+            </p>
+          )}
         </div>
 
         <Separator />
