@@ -18,3 +18,6 @@ scripts/cache/
 *.mov
 *.mkv
 *.webm
+
+# Agent worktrees
+.claude/worktrees/
