@@ -26,9 +26,12 @@ export async function POST(req: NextRequest) {
     if (!filePath) return new Response("Missing or invalid jobId", { status: 400 })
 
     const { detections } = await req.json()
+    // The renderer expects a list of frames; refuse anything else rather
+    // than overwrite the job's translations with something unrenderable
+    if (!Array.isArray(detections)) return new Response("detections must be an array", { status: 400 })
     fs.writeFileSync(filePath, JSON.stringify(detections, null, 2), "utf-8")
     return NextResponse.json({ success: true })
-  } catch (err: any) {
-    return new Response(err.message, { status: 500 })
+  } catch (err: unknown) {
+    return new Response(err instanceof Error ? err.message : "Save failed", { status: 500 })
   }
 }

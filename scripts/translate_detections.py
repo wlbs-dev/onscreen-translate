@@ -47,7 +47,8 @@ def setup_logging(verbose: bool) -> None:
 
 logger = logging.getLogger(__name__)
 
-SARVAM_ENDPOINT   = "https://api.sarvam.ai/translate"
+# SARVAM_API_URL overrides the endpoint (self-hosted proxy, tests)
+SARVAM_ENDPOINT   = os.environ.get("SARVAM_API_URL", "https://api.sarvam.ai/translate")
 SARVAM_SRC_LANG   = "en-IN"
 SARVAM_MODEL      = "mayura:v1"
 OPENAI_MODEL      = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")

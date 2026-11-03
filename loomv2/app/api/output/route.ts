@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server"
 import fs from "fs"
+import { Readable } from "stream"
 import { jobPaths, isValidJobId } from "../../../lib/jobPaths"
 
 export const runtime = "nodejs"
@@ -19,7 +20,7 @@ export async function GET(req: NextRequest) {
     ? `attachment; filename="translated_${jobId.slice(0, 8)}.mp4"`
     : `inline; filename="translated_${jobId.slice(0, 8)}.mp4"`
 
-  return new Response(stream as any, {
+  return new Response(Readable.toWeb(stream) as ReadableStream, {
     headers: {
       "Content-Type": "video/mp4",
       "Content-Length": stat.size.toString(),

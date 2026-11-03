@@ -1,5 +1,6 @@
 // lib/jobPaths.ts
 import path from "path"
+import fs from "fs"
 import { execSync } from "child_process"
 
 // Resolve from the cwd (loomv2/) — __dirname points into .next/ once bundled
@@ -30,10 +31,10 @@ export function jobPaths(jobId: string) {
 }
 
 export function getPython(): string {
-  // Prefer venv inside scripts folder, fall back to system python
+  // PYTHON wins (e.g. in Docker), then a venv inside scripts/, then system python
+  if (process.env.PYTHON) return process.env.PYTHON
   const venvWin  = path.join(SCRIPTS_DIR, ".venv", "Scripts", "python.exe")
   const venvUnix = path.join(SCRIPTS_DIR, ".venv", "bin", "python")
-  const fs = require("fs")
   if (fs.existsSync(venvWin))  return venvWin
   if (fs.existsSync(venvUnix)) return venvUnix
   try {
