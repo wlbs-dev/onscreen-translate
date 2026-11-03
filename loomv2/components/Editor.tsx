@@ -111,6 +111,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const [currentTime, setCurrentTime]       = useState(0)
   const [duration, setDuration]             = useState(0)
   const [isLoading, setIsLoading]           = useState(true)
+  const [loadError, setLoadError]           = useState("")
   const [saveStatus, setSaveStatus]         = useState<"idle" | "saving" | "saved" | "error">("idle")
   const [renderStatus, setRenderStatus]     = useState<"idle" | "running" | "done" | "error">("idle")
   const [renderProgress, setRenderProgress] = useState(0)
@@ -138,9 +139,13 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   // isLoading starts true; the editor is remounted per job (see app/page.tsx)
   useEffect(() => {
     fetch(`/api/detections${q}`)
-      .then((r) => r.json())
-      .then((data) => setFrames(addIds(data)))
-      .catch(console.error)
+      .then(async (r) => {
+        if (r.status === 404) throw new Error("This video has no translations yet. Go back and run Translate from its menu (or wait for processing to finish).")
+        if (!r.ok) throw new Error(`Could not load translations (${r.status})`)
+        return r.json()
+      })
+      .then((data) => setFrames(addIds(Array.isArray(data) ? data : [])))
+      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : "Could not load translations"))
       .finally(() => setIsLoading(false))
   }, [q])
 
@@ -471,6 +476,12 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               <div className="w-full h-full flex items-center justify-center gap-2 text-muted-foreground">
                 <Loader2 size={18} className="animate-spin" />
                 <span className="text-xs">Loading detections…</span>
+              </div>
+            ) : loadError ? (
+              <div className="w-full h-full flex flex-col items-center justify-center gap-3 px-6 text-center">
+                <AlertCircle size={20} className="text-amber-400" />
+                <p className="text-sm text-white/80 max-w-sm">{loadError}</p>
+                <Button size="sm" variant="secondary" onClick={onBack}>Back to videos</Button>
               </div>
             ) : (
               <VideoPlayer

@@ -5,6 +5,7 @@ import { Upload, ChevronRight, AlertCircle, CheckCircle, Loader2, Film, X } from
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
@@ -162,6 +163,9 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
             <DialogTitle className="text-sm font-semibold text-foreground">
               Upload Video
             </DialogTitle>
+            <DialogDescription className="sr-only">
+              Upload a video, choose the language, and we will find and translate its on-screen text.
+            </DialogDescription>
           </div>
         </DialogHeader>
 
