@@ -1,8 +1,9 @@
 "use client"
 
-import { useRef, useEffect, useCallback } from "react"
+import { useRef, useEffect, useCallback, useState } from "react"
 import type { OverlayEvent } from "@/lib/editor/types"
 import { effectiveFontSize } from "@/lib/editor/fontSize"
+import { INDIC_FONT_STACK, loadIndicFonts } from "@/lib/editor/indicFonts"
 
 interface Props {
   events: OverlayEvent[]
@@ -39,6 +40,14 @@ export default function OverlayCanvas({
 
   // ── Draw ──────────────────────────────────────────────────────────────────
 
+  // Redraw once the renderer's fonts arrive so glyphs and widths match the render
+  const [fontsReady, setFontsReady] = useState(0)
+  useEffect(() => {
+    let alive = true
+    loadIndicFonts().then(() => { if (alive) setFontsReady((n) => n + 1) })
+    return () => { alive = false }
+  }, [])
+
   useEffect(() => {
     const canvas = canvasRef.current
     if (!canvas || !videoRect.w) return
@@ -55,9 +64,21 @@ export default function OverlayCanvas({
       const isSelected = selectedIds.includes(event.id)
       const isPrimary  = event.id === selectedId
 
+      // Explicit size, or the renderer's auto rule (fit to box height), in video px
+      const fsVideo = effectiveFontSize(event)
+      ctx.font = `400 ${Math.max(4, fsVideo * s)}px ${INDIC_FONT_STACK}`
+
+      // Like the renderer: the cover patch grows to fit the text (span padding
+      // 4px each side + 10px), never past the right edge of the video
+      let patchW = sw
+      if (event.translation) {
+        const natural = (ctx.measureText(event.translation).width / s + 8 + 10) * s
+        patchW = Math.min(Math.max(sw, natural), videoRect.w - sx)
+      }
+
       ctx.globalAlpha = 0.85
       ctx.fillStyle = event.bgColor || "#000000"
-      ctx.fillRect(sx, sy, sw, sh)
+      ctx.fillRect(sx, sy, patchW, sh)
       ctx.globalAlpha = 1
 
       ctx.strokeStyle = isSelected ? "#60a5fa" : "rgba(255,255,255,0.18)"
@@ -65,16 +86,13 @@ export default function OverlayCanvas({
       ctx.strokeRect(sx + 0.5, sy + 0.5, sw - 1, sh - 1)
 
       if (event.translation) {
-        // Explicit size, or the renderer's auto rule (fit to box height), in video px
-        const fs = Math.max(8, effectiveFontSize(event) * s)
-        ctx.font = `600 ${fs}px "Inter", system-ui, sans-serif`
         ctx.fillStyle = event.textColor || "#ffffff"
         ctx.textBaseline = "middle"
         ctx.save()
         ctx.beginPath()
-        ctx.rect(sx + 4, sy, sw - 8, sh)
+        ctx.rect(sx, sy, patchW, sh)
         ctx.clip()
-        ctx.fillText(event.translation, sx + 6, sy + sh / 2)
+        ctx.fillText(event.translation, sx + 4 * s, sy + sh / 2)
         ctx.restore()
       }
 
@@ -99,7 +117,7 @@ export default function OverlayCanvas({
         })
       }
     })
-  }, [events, selectedIds, selectedId, videoRect, scale])
+  }, [events, selectedIds, selectedId, videoRect, scale, fontsReady])
 
   // ── Canvas mouse → video-pixel coords ─────────────────────────────────────
   // Canvas is positioned at videoRect.x/y, so clientX - canvasBCR.left

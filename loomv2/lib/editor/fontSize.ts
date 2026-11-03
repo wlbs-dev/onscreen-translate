@@ -21,7 +21,9 @@ export function isAutoFontSize(ev: Pick<OverlayEvent, "fontSize">): boolean {
   return !(ev.fontSize && ev.fontSize > 0)
 }
 
-/** Font size the preview should draw with, in video pixels */
+/** Font size the renderer will use, in video pixels (explicit sizes are clamped too) */
 export function effectiveFontSize(ev: Pick<OverlayEvent, "fontSize" | "bbox">): number {
-  return isAutoFontSize(ev) ? autoFontSize(ev.bbox) : (ev.fontSize as number)
+  return isAutoFontSize(ev)
+    ? autoFontSize(ev.bbox)
+    : Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, ev.fontSize as number))
 }
