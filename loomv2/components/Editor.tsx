@@ -10,6 +10,7 @@ import Header from "./Header"
 import VideoPlayer, { OverlayEvent } from "./VideoPlayer"
 import Sidebar from "./Sidebar"
 import Timeline, { SelectMode } from "./Timeline"
+import ShortcutsHelp from "./editor/ShortcutsHelp"
 import { useHistory } from "@/lib/editor/useHistory"
 import { applyPatches, EventPatches } from "@/lib/editor/types"
 import { isTypingTarget } from "@/lib/editor/shortcuts"
@@ -99,6 +100,7 @@ export default function Editor({ jobId, onBack }: EditorProps) {
   const [renderProgress, setRenderProgress] = useState(0)
   const [renderMessage, setRenderMessage]   = useState("")
   const [renderLog, setRenderLog]           = useState<string[]>([])
+  const [helpOpen, setHelpOpen]             = useState(false)
 
   const q = `?jobId=${jobId}`
 
@@ -183,21 +185,96 @@ export default function Editor({ jobId, onBack }: EditorProps) {
     setSelection([])
   }
 
+  // Shift all selected clips in time, keeping them inside the video
+  function nudgeSelected(dt: number) {
+    if (selectedIds.length === 0) return
+    const ids = new Set(selectedIds)
+    const round = (t: number) => Math.round(t * 1000) / 1000
+    setEvents((prev) => {
+      const sel = prev.filter((e) => ids.has(e.id))
+      if (sel.length === 0) return prev
+      const minStart = Math.min(...sel.map((e) => e.startTime))
+      const maxEnd   = Math.max(...sel.map((e) => e.endTime))
+      const d = Math.max(-minStart, Math.min(duration - maxEnd, dt))
+      const patches: EventPatches = {}
+      for (const e of sel) patches[e.id] = { startTime: round(e.startTime + d), endTime: round(e.endTime + d) }
+      return applyPatches(prev, patches)
+    }, { coalesceKey: `nudge:${selectedIds.join(",")}` })
+  }
+
+  function seekBy(dt: number) {
+    const v = videoRef.current; if (!v) return
+    v.currentTime = Math.max(0, Math.min(v.duration || duration, v.currentTime + dt))
+  }
+
+  function togglePlay() {
+    const v = videoRef.current; if (!v) return
+    if (v.paused) v.play().catch(() => {}); else v.pause()
+  }
+
   // ── Keyboard shortcuts ──────────────────────────────────────────────────
+  // useEffectEvent: one window listener that always sees the latest state.
   const onKeyDown = useEffectEvent((e: KeyboardEvent) => {
-    if (e.defaultPrevented || isTypingTarget(e.target)) return
+    if (e.defaultPrevented) return
     const mod = e.ctrlKey || e.metaKey
     const key = e.key.toLowerCase()
+
+    // Save works even while typing, and must beat the browser's "Save page"
+    if (mod && !e.altKey && !e.shiftKey && key === "s") {
+      e.preventDefault()
+      if (saveStatus !== "saving") handleSave()
+      return
+    }
+    if (isTypingTarget(e.target) || helpOpen) return
+
     if (mod && !e.altKey && (key === "z" || key === "y")) {
       e.preventDefault()
       if (key === "y" || e.shiftKey) redo(); else undo()
+      return
+    }
+    if (mod) return
+
+    switch (e.key) {
+      case " ":
+        e.preventDefault()
+        togglePlay()
+        break
+      case "ArrowLeft":
+      case "ArrowRight": {
+        // preventDefault also stops Alt+Left from navigating back
+        e.preventDefault()
+        const dt = (e.key === "ArrowLeft" ? -1 : 1) * (e.shiftKey ? 1 : 0.1)
+        if (e.altKey) nudgeSelected(dt); else seekBy(dt)
+        break
+      }
+      case "Delete":
+      case "Backspace":
+        if (selectedIds.length > 0) { e.preventDefault(); deleteSelected() }
+        break
+      case "Escape":
+        setSelection([])
+        break
+      case "?":
+        e.preventDefault()
+        setHelpOpen(true)
+        break
     }
   })
 
+  // A focused button would also "click" on Space keyup; we already handled it
+  const onKeyUp = useEffectEvent((e: KeyboardEvent) => {
+    if (e.key === " " && !isTypingTarget(e.target) && !helpOpen) e.preventDefault()
+  })
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => onKeyDown(e)
-    window.addEventListener("keydown", handler)
-    return () => window.removeEventListener("keydown", handler)
+    const down = (e: KeyboardEvent) => onKeyDown(e)
+    const up   = (e: KeyboardEvent) => onKeyUp(e)
+    window.addEventListener("keydown", down)
+    window.addEventListener("keyup", up)
+    return () => {
+      window.removeEventListener("keydown", down)
+      window.removeEventListener("keyup", up)
+    }
   }, [])
 
   const handleVideoReady = useCallback((el: HTMLVideoElement) => { videoRef.current = el }, [])
@@ -267,6 +344,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
               {fmt(currentTime)} / {fmt(duration)}
             </span>
             <Separator orientation="vertical" className="h-4" />
+
+            <ShortcutsHelp open={helpOpen} onOpenChange={setHelpOpen} />
 
             {/* Undo / Redo */}
             <Button
