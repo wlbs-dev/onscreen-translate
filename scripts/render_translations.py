@@ -2,10 +2,18 @@
 """
 render_translations.py — Render output video from translated_detections.json
 
-Each overlay (cover patch + translated text) is drawn once as a PNG with
-Pillow + raqm (HarfBuzz shaping, so Indic conjuncts and matras are correct),
-then ffmpeg composites all of them onto the video in a single encode pass
-with timed `overlay` filters — no browser, no per-frame Python loop.
+Each overlay is drawn once as a PNG with Pillow + raqm (HarfBuzz shaping, so
+Indic conjuncts and matras are correct), then ffmpeg composites all of them
+onto the video in a single encode pass with timed filters — no browser, no
+per-frame Python loop.
+
+Cover styles (per block `cover`, default "erase"):
+  erase — remove the original text (erase.py) and draw the translation on the
+          rebuilt background in the original text colour. Static backgrounds
+          get an inpainted clean plate; moving ones get ffmpeg delogo per frame
+          plus a transparent, outlined text layer.
+  box   — the original flat patch (sampled or chosen bgColor). Choosing an
+          explicit bgColor in the editor implies box.
 """
 
 import argparse
@@ -17,6 +25,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -41,8 +51,10 @@ FONT_DIR        = "assets"
 TEXT_PAD_X      = 4
 PATCH_SLACK     = 10
 FONT_SIZE_MIN   = 14
-FONT_SIZE_MAX   = 72
-FONT_SIZE_RATIO = 0.55
+FONT_SIZE_MAX   = 120
+# OCR boxes include ascenders/descenders and a little padding; 0.72 of the box
+# height gives Indic text about the same visual size as the original Latin
+FONT_SIZE_RATIO = 0.72
 
 
 
@@ -103,6 +115,11 @@ def correct_bbox(raw_bbox: list, y_correction: float, vid_w: int, vid_h: int) ->
 
 # ── Timeline builder ──────────────────────────────────────────────────────────
 
+def text_key(text: str) -> str:
+    """Identity of an on-screen text across frames. Mirror: Editor.tsx textKey()."""
+    return re.sub(r"[\W_]+", "", text.lower())
+
+
 def build_timeline(detections: list[dict], video_duration: float,
                    vid_w: int = 0, vid_h: int = 0) -> list[dict]:
     """
@@ -126,7 +143,9 @@ def build_timeline(detections: list[dict], video_duration: float,
         current_keys: set[tuple] = set()
 
         for block in frame["blocks"]:
-            key = (block["text"].lower().strip(),)
+            # OCR spacing varies between frames ("Limitedoffer" vs "Limited
+            # offer"), so match on letters and digits only
+            key = (text_key(block["text"]),)
             current_keys.add(key)
 
             y_correction = extract_y_correction(block)
@@ -152,6 +171,9 @@ def build_timeline(detections: list[dict], video_duration: float,
                 active[key]["text_color"] = block.get("textColor", "")
                 active[key]["auto_bg"]    = block.get("autoBgColor", "")
                 active[key]["font_size"]  = block.get("fontSize", 0)
+                active[key]["cover"]      = block.get("cover", "")
+                active[key]["frames"].append(
+                    raw_frame_path(frame.get("frame_path", ""), frame.get("frame_index")))
             else:
                 active[key] = {
                     "start_time":    max(0.0, ts - 0.5),
@@ -168,6 +190,10 @@ def build_timeline(detections: list[dict], video_duration: float,
                     "text_color":    block.get("textColor", ""),
                     "auto_bg":       block.get("autoBgColor", ""),
                     "font_size":     block.get("fontSize", 0),
+                    "cover":         block.get("cover", ""),
+                    # Raw frames this text is visible in (for erasing)
+                    "frames":        [raw_frame_path(frame.get("frame_path", ""),
+                                                     frame.get("frame_index"))],
                 }
 
         for key in list(active):
@@ -288,21 +314,28 @@ def measure_text(text: str, size: int) -> tuple[float, int, int]:
     return width, asc, desc
 
 
+def draw_text(img, text: str, x: float, center_y: float, font_size: int,
+              color, stroke: int = 0, stroke_color=None) -> None:
+    """Draw text left-aligned at x, vertically centred on center_y, run by run."""
+    from PIL import ImageDraw
+    if not text.strip():
+        return
+    draw = ImageDraw.Draw(img)
+    _, asc, desc = measure_text(text, font_size)
+    baseline = center_y - (asc + desc) / 2 + asc
+    for font_file, run in script_runs(text):
+        font = load_font(font_file, font_size)
+        draw.text((x, baseline), run, font=font, fill=color, anchor="ls",
+                  stroke_width=stroke, stroke_fill=stroke_color)
+        x += font.getlength(run)
+
+
 def draw_overlay(text: str, width: int, height: int, font_size: int,
                  bg_rgb: tuple[int, int, int], text_color: tuple[int, int, int]):
     """Opaque cover patch with the text left-aligned and vertically centred."""
-    from PIL import Image, ImageDraw
+    from PIL import Image
     img = Image.new("RGB", (width, height), bg_rgb)
-    if not text.strip():
-        return img
-    draw = ImageDraw.Draw(img)
-    _, asc, desc = measure_text(text, font_size)
-    baseline = (height - (asc + desc)) / 2 + asc
-    x = float(TEXT_PAD_X)
-    for font_file, run in script_runs(text):
-        font = load_font(font_file, font_size)
-        draw.text((x, baseline), run, font=font, fill=text_color, anchor="ls")
-        x += font.getlength(run)
+    draw_text(img, text, TEXT_PAD_X, height / 2, font_size, text_color)
     return img
 
 
@@ -368,8 +401,106 @@ def ffmpeg_major_version() -> int:
         return 6
 
 
+def _font_size(event: dict, bh: int) -> int:
+    saved_fs = event.get("font_size", 0)
+    if saved_fs and saved_fs > 0:
+        return max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(saved_fs)))
+    return max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(bh * FONT_SIZE_RATIO)))
+
+
+def _cover_style(event: dict) -> str:
+    if event.get("cover") in ("erase", "box"):
+        return event["cover"]
+    # A user-picked background colour means they want a box
+    return "box" if HEX_COLOR_RE.match(event.get("bg_color", "") or "") else "erase"
+
+
+def _box_overlay(event, rect, text, font_size, png) -> dict:
+    x1, y1, x2, y2 = rect
+    bw, bh = x2 - x1, y2 - y1
+    r, g, b = sample_bg_color(event.get("frame_path", ""), [x1, y1, x2, y2],
+                              event.get("bg_color", ""), event.get("auto_bg", ""))
+    saved = event.get("text_color", "")
+    text_rgb = hex_to_rgb(saved) if HEX_COLOR_RE.match(saved or "") else auto_text_rgb((r, g, b))
+    width = bw
+    if text.strip():
+        natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK
+        width = min(max(bw, natural_w), event["_vid_w"] - x1)
+    draw_overlay(text, width, bh, font_size, (r, g, b), text_rgb).save(png)
+    return {"png": png, "x": x1, "y": y1, "w": width, "h": bh, "mode": "box"}
+
+
+def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | None:
+    """Erase the original text; None if no frames could be read (caller boxes)."""
+    import cv2
+    from PIL import Image
+    import erase
+
+    x1, y1, x2, y2 = rect
+    bh = y2 - y1
+    paths = [p for p in event.get("frames", []) if p and os.path.isfile(p)]
+    if not paths:
+        return None
+    frames = [cv2.imread(paths[i]) for i in erase.sample_indices(len(paths))]
+    frames = [f for f in frames if f is not None and f.shape[1] == vid_w and f.shape[0] == vid_h]
+    if not frames:
+        return None
+
+    # Region: the original box plus a margin (anti-aliasing, outlines,
+    # shadows), widened to fit the translation if it is longer
+    m = max(4, round(bh * 0.15))
+    natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK if text.strip() else 0
+    rx1, ry1 = max(0, x1 - m), max(0, y1 - m)
+    rx2 = min(vid_w, max(x2 + m, x1 + natural_w))
+    ry2 = min(vid_h, y2 + m)
+    region = (rx1, ry1, rx2, ry2)
+
+    mask, moving, base = erase.analyse_span(
+        frames, region, bh, core=(x1 - rx1, y1 - ry1, x2 - rx1, y2 - ry1))
+    base_frame = frames[base]
+    base_crop = erase.crop(base_frame, region)
+
+    saved = event.get("text_color", "")
+    if HEX_COLOR_RE.match(saved or ""):
+        text_rgb = hex_to_rgb(saved)
+    else:
+        text_rgb = erase.text_color(erase.crop(base_frame, (x1, y1, x2, y2)), bh)
+
+    text_x = x1 - rx1 + TEXT_PAD_X
+    center_y = (y1 + y2) / 2 - ry1
+
+    if not moving:
+        plate = erase.clean_plate(base_frame, region, mask)
+        img = Image.fromarray(cv2.cvtColor(plate, cv2.COLOR_BGR2RGB))
+        if text_rgb is None:
+            med = np.median(plate.reshape(-1, 3), axis=0)
+            text_rgb = auto_text_rgb((int(med[2]), int(med[1]), int(med[0])))
+        # Busy backgrounds (photos, textures) get a contrasting outline,
+        # like the outlined captions they usually replace
+        stroke = max(1, font_size // 18) if erase.is_busy(plate) else 0
+        draw_text(img, text, text_x, center_y, font_size, text_rgb,
+                  stroke=stroke, stroke_color=auto_text_rgb(text_rgb))
+        img.save(png)
+        return {"png": png, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1, "mode": "erase"}
+
+    # Moving background: erase per frame with delogo over the original text
+    # and lay transparent text on top, outlined so it reads on anything
+    if text_rgb is None:
+        text_rgb = (255, 255, 255)
+    outline = auto_text_rgb(text_rgb)
+    img = Image.new("RGBA", (rx2 - rx1, ry2 - ry1), (0, 0, 0, 0))
+    draw_text(img, text, text_x, center_y, font_size, text_rgb + (255,),
+              stroke=max(1, font_size // 18), stroke_color=outline + (255,))
+    img.save(png)
+    # delogo needs the rectangle strictly inside the frame
+    dx1, dy1 = max(1, x1 - m), max(1, y1 - m)
+    dx2, dy2 = min(vid_w - 2, x2 + m), min(vid_h - 2, y2 + m)
+    return {"png": png, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1, "mode": "delogo",
+            "delogo": (dx1, dy1, max(1, dx2 - dx1), max(1, dy2 - dy1))}
+
+
 def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> list[dict]:
-    """Draw one PNG per event; return [{png, x, y, start, end}]."""
+    """Draw one PNG per event; return [{png, x, y, start, end, mode, delogo?}]."""
     overlays = []
     for i, event in enumerate(events):
         x1, y1, x2, y2 = event["bbox_px"]
@@ -378,36 +509,33 @@ def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> 
         y1 = max(0, min(y1, vid_h - 1))
         x2 = max(x1 + 1, min(x2, vid_w))
         y2 = max(y1 + 1, min(y2, vid_h))
-        bw, bh = x2 - x1, y2 - y1
+        rect = (x1, y1, x2, y2)
+        bh = y2 - y1
 
-        r, g, b = sample_bg_color(event.get("frame_path", ""), [x1, y1, x2, y2],
-                                  event.get("bg_color", ""), event.get("auto_bg", ""))
-
-        saved_text_color = event.get("text_color", "")
-        if saved_text_color and HEX_COLOR_RE.match(saved_text_color):
-            text_rgb = hex_to_rgb(saved_text_color)
-        else:
-            text_rgb = auto_text_rgb((r, g, b))
-
-        saved_fs = event.get("font_size", 0)
-        if saved_fs and saved_fs > 0:
-            font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(saved_fs)))
-        else:
-            font_size = max(FONT_SIZE_MIN, min(FONT_SIZE_MAX, int(bh * FONT_SIZE_RATIO)))
-
+        font_size = _font_size(event, bh)
         text = event["translated_text"]
-        width = bw
-        if text.strip():
-            natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK
-            width = min(max(bw, natural_w), vid_w - x1)
-
+        if not text.strip() and event.get("cover") not in ("erase", "box"):
+            # Untranslated (e.g. a logo or an OCR false positive): leave the
+            # original visible. Choosing a cover style in the editor overrides.
+            logger.info(f"  [{i+1}/{len(events)}] skip   '{event['original_text'][:30]}' (no translation)")
+            continue
         png = os.path.join(out_dir, f"overlay_{i:04d}.png")
-        draw_overlay(text, width, bh, font_size, (r, g, b), text_rgb).save(png)
-        overlays.append({"png": png, "x": x1, "y": y1,
-                         "start": event["start_time"], "end": event["end_time"]})
-        label = f"'{text[:30]}'" if text.strip() else "(blank cover)"
-        logger.info(f"  [{i+1}/{len(events)}] {label} at ({x1},{y1}) {width}x{bh} "
-                    f"{event['start_time']:.2f}s → {event['end_time']:.2f}s")
+        event["_vid_w"] = vid_w
+
+        ov = None
+        if _cover_style(event) == "erase":
+            try:
+                ov = _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h)
+            except Exception as e:  # never fail a whole render over one box
+                logger.warning(f"  [{i+1}] erase failed ({e}); using a box instead")
+        if ov is None:
+            ov = _box_overlay(event, rect, text, font_size, png)
+
+        ov.update(start=event["start_time"], end=event["end_time"])
+        overlays.append(ov)
+        label = f"'{text[:30]}'" if text.strip() else "(no text)"
+        logger.info(f"  [{i+1}/{len(events)}] {ov['mode']:6} {label} at ({ov['x']},{ov['y']}) "
+                    f"{ov['w']}x{ov['h']} {event['start_time']:.2f}s → {event['end_time']:.2f}s")
     return overlays
 
 
@@ -434,10 +562,14 @@ def render_video(input_path: str, output_path: str, events: list[dict], meta: di
         # Convert down to yuv420p once at the end.
         chain, prev = ["[0:v]format=yuv444p[v0]"], "v0"
         for n, ov in enumerate(overlays, start=1):
+            enable = f"enable='gte(t,{ov['start']:.3f})*lt(t,{ov['end']:.3f})'"
+            if ov.get("delogo"):
+                dx, dy, dw, dh = ov["delogo"]
+                chain.append(f"[{prev}]delogo=x={dx}:y={dy}:w={dw}:h={dh}:{enable}[d{n}]")
+                prev = f"d{n}"
             out = f"v{n}"
             chain.append(
-                f"[{prev}][{n}:v]overlay=x={ov['x']}:y={ov['y']}:format=yuv444:"
-                f"enable='gte(t,{ov['start']:.3f})*lt(t,{ov['end']:.3f})'[{out}]"
+                f"[{prev}][{n}:v]overlay=x={ov['x']}:y={ov['y']}:format=yuv444:{enable}[{out}]"
             )
             prev = out
         chain.append(f"[{prev}]format=yuv420p[vout]")

@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from colors import border_median_rgb, rgb_to_hex
+from erase import text_color as erase_text_color
 
 
 def setup_logging(verbose: bool) -> None:
@@ -151,6 +152,10 @@ def _ocr_frame_worker(args):
         if not text:
             continue
         if re.fullmatch(r"[\d\s,.\-+%$€£¥:/]+", text):
+            continue
+        # The source is English; the multilingual model sometimes "reads"
+        # CJK characters in textures and patterns. Require a Latin letter.
+        if not re.search(r"[A-Za-z]", text):
             continue
         xs = [p[0] for p in quad]
         ys = [p[1] for p in quad]
@@ -319,6 +324,10 @@ def main() -> None:
             if not saved_words:
                 continue
             bg = border_median_rgb(raw_img, block["bbox"])
+            fg = None
+            if raw_img is not None:
+                bx1, by1, bx2, by2 = block["bbox"]
+                fg = erase_text_color(raw_img[max(0, by1):by2, max(0, bx1):bx2], by2 - by1)
             saved_blocks.append({
                 "text":  " ".join(w["text"] for w in saved_words),
                 "bbox":  block["bbox"],
@@ -326,6 +335,8 @@ def main() -> None:
                 # Sampled cover-patch colour for the editor preview. Not a user
                 # choice: the renderer only treats `bgColor` as an override.
                 **({"autoBgColor": rgb_to_hex(bg)} if bg else {}),
+                # Original text fill colour; erase mode reuses it for the translation
+                **({"autoTextColor": rgb_to_hex(fg)} if fg else {}),
                 "words": [{"text": w["text"], "bbox": w["bbox"], "conf": w["conf"]} for w in saved_words],
             })
 
