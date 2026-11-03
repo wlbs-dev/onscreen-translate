@@ -439,8 +439,9 @@ export default function Editor({ jobId, onBack }: EditorProps) {
                     <Download size={12} /> Download
                   </a>
                 </Button>
-                <Button size="sm" variant="ghost" onClick={() => setRenderStatus("idle")}>
-                  <Play size={12} />
+                <Button size="sm" variant="outline" className="gap-1.5" onClick={handleRender}
+                  title="Render again with your latest edits">
+                  <Play size={12} /> Render again
                 </Button>
               </>
             ) : (
