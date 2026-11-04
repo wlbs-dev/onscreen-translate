@@ -11,7 +11,8 @@ export const SESSION_MAX_AGE = 60 * 60 * 24 * 14 // 14 days, in seconds
 
 export interface SessionPayload {
   uid: string
-  exp: number // unix seconds
+  exp: number  // unix seconds
+  iat?: number // unix seconds; sessions issued before a password reset are revoked
 }
 
 const enc = new TextEncoder()
@@ -44,7 +45,8 @@ function hmacKey(): Promise<CryptoKey> {
 }
 
 export async function signSession(uid: string, maxAgeSec = SESSION_MAX_AGE): Promise<string> {
-  const payload: SessionPayload = { uid, exp: Math.floor(Date.now() / 1000) + maxAgeSec }
+  const now = Math.floor(Date.now() / 1000)
+  const payload: SessionPayload = { uid, exp: now + maxAgeSec, iat: now }
   const body = b64urlEncode(enc.encode(JSON.stringify(payload)))
   const sig = new Uint8Array(await crypto.subtle.sign("HMAC", await hmacKey(), enc.encode(body)))
   return `${body}.${b64urlEncode(sig)}`

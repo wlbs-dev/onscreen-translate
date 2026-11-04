@@ -120,6 +120,15 @@ export default function AdminPanel() {
   const [invites, setInvites] = useState<Invite[]>([])
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([])
   const [feedback, setFeedback] = useState<FeedbackEntry[]>([])
+  const [resetLink, setResetLink] = useState<{ email: string; url: string } | null>(null)
+
+  async function createResetLink(id: string) {
+    const res = await fetch("/api/admin/users/reset", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (res.ok) setResetLink({ email: data.email, url: `${window.location.origin}${data.path}` })
+  }
   const [error, setError] = useState("")
   const [inviteEmail, setInviteEmail] = useState("")
   const [newInvite, setNewInvite] = useState<Invite | null>(null)
@@ -225,6 +234,15 @@ export default function AdminPanel() {
             )}
           </div>
 
+          {tab === "users" && resetLink && (
+            <div className="mb-3 flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm" data-testid="reset-link-box">
+              <span className="text-amber-900">Reset link for <b>{resetLink.email}</b> (single use, expires in 24 h):</span>
+              <code className="max-w-full truncate rounded bg-white px-2 py-1 text-xs" data-testid="reset-link">{resetLink.url}</code>
+              <CopyButton text={resetLink.url} />
+              <button type="button" className="ml-auto text-xs text-amber-900 underline" onClick={() => setResetLink(null)}>Dismiss</button>
+            </div>
+          )}
+
           {tab === "users" && (
             <div className="overflow-x-auto rounded-xl border">
               <table className="w-full text-sm">
@@ -270,6 +288,13 @@ export default function AdminPanel() {
                           </Button>
                         )}
                         {u.disabled && <Badge variant="destructive" className="ml-2 text-[10px]">disabled</Badge>}
+                        {!u.disabled && (
+                          <Button size="sm" variant="ghost" className="ml-1" onClick={() => createResetLink(u.id)}
+                            title="Create a single-use link that lets this user set a new password"
+                            data-testid={`reset-${u.email}`}>
+                            Reset link
+                          </Button>
+                        )}
                       </td>
                     </tr>
                   ))}

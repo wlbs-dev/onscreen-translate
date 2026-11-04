@@ -10,8 +10,8 @@ import { SESSION_COOKIE, verifySession } from "./lib/auth"
 import { isSameOrigin, isStateChanging } from "./lib/csrf"
 
 const PUBLIC_PATHS = new Set([
-  "/", "/login", "/signup",
-  "/api/login", "/api/logout", "/api/signup", "/api/waitlist", "/api/health",
+  "/", "/login", "/signup", "/reset",
+  "/api/login", "/api/logout", "/api/signup", "/api/reset", "/api/waitlist", "/api/health",
   "/api/fonts", // the bundled OFL fonts; the landing page uses them for native script names
 ])
 

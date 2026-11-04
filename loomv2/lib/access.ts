@@ -10,7 +10,7 @@
 //   const { user, job } = access
 import { NextResponse, type NextRequest } from "next/server"
 import { cookies } from "next/headers"
-import { SESSION_COOKIE, verifySession } from "./auth"
+import { SESSION_COOKIE, verifySession, type SessionPayload } from "./auth"
 import { isSameOrigin, isStateChanging } from "./csrf"
 import { getUserById, type User } from "./users"
 import { getJob, type Job } from "./jobStore"
@@ -33,7 +33,14 @@ export async function userFromToken(token: string | undefined): Promise<User | n
   const session = await verifySession(token)
   if (!session) return null
   const user = getUserById(session.uid)
-  return user && !user.disabled ? user : null
+  return user && !user.disabled && !revoked(session, user) ? user : null
+}
+
+/** Sessions issued before the user's last password reset no longer count. */
+function revoked(session: SessionPayload, user: User): boolean {
+  if (!user.sessionsValidAfter) return false
+  // Second-granularity iat: allow the session issued in the same second as the reset
+  return (session.iat ?? 0) * 1000 < Math.floor(user.sessionsValidAfter / 1000) * 1000
 }
 
 /** For server components / pages. */
@@ -53,7 +60,8 @@ export async function requireUser(req: Req): Promise<User | Response> {
   const blocked = crossSiteBlocked(req)
   if (blocked) return blocked
   const session = await verifySession(sessionToken(req))
-  const user = session ? getUserById(session.uid) : undefined
+  const found = session ? getUserById(session.uid) : undefined
+  const user = found && session && !revoked(session, found) ? found : undefined
   if (!user || user.disabled) {
     const res = NextResponse.json(
       { error: user?.disabled ? "This account has been disabled" : "Not signed in" },

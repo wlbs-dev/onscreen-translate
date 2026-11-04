@@ -16,6 +16,8 @@ export interface User {
   monthlyMinutes: number // video minutes per calendar month (UTC); admins are unlimited
   createdAt: number
   disabled?: boolean
+  /** ms; sessions issued before this are rejected (set on password reset) */
+  sessionsValidAfter?: number
 }
 
 /** A user as it may leave the server — never includes the password hash. */
@@ -93,7 +95,7 @@ export function createUser(input: {
 
 export function updateUser(
   id: string,
-  patch: Partial<Pick<User, "name" | "role" | "plan" | "monthlyMinutes" | "disabled" | "passwordHash">>
+  patch: Partial<Pick<User, "name" | "role" | "plan" | "monthlyMinutes" | "disabled" | "passwordHash" | "sessionsValidAfter">>
 ): User | undefined {
   const users = listUsers()
   const user = users.find((u) => u.id === id)
