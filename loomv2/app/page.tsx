@@ -11,6 +11,7 @@ import HeroDemo from "@/components/landing/HeroDemo"
 import WaitlistForm from "@/components/landing/WaitlistForm"
 import { currentUser } from "@/lib/access"
 import { LANGUAGES } from "@/lib/languages"
+import { PUBLIC_PLANS, formatInr, formatUsd } from "@/lib/plans"
 
 export const dynamic = "force-dynamic"
 export const metadata = {
@@ -65,6 +66,7 @@ export default async function Landing() {
             <a href="#how" className="hover:text-foreground">How it works</a>
             <a href="#languages" className="hover:text-foreground">Languages</a>
             <a href="#who" className="hover:text-foreground">Who it&apos;s for</a>
+            <a href="#pricing" className="hover:text-foreground">Pricing</a>
           </nav>
           <div className="flex-1" />
           <Button asChild variant="ghost" size="sm"><Link href="/login">Sign in</Link></Button>
@@ -169,6 +171,44 @@ export default async function Landing() {
                 <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{a.body}</p>
               </div>
             ))}
+          </div>
+        </section>
+
+        {/* Pricing (from lib/plans.ts) */}
+        <section id="pricing" className="scroll-mt-16 border-t">
+          <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6">
+            <h2 className="text-2xl font-semibold tracking-tight">Pricing</h2>
+            <p className="mt-2 max-w-2xl text-sm text-muted-foreground">
+              Pay for the minutes of video you localize. Every plan includes all ten languages and the full editor,
+              and minutes are shared by your whole team.
+            </p>
+            <div className="mt-8 grid gap-3 md:grid-cols-3" data-testid="pricing">
+              {PUBLIC_PLANS.map((p) => (
+                <div key={p.id} className={`flex flex-col rounded-xl border bg-background p-5 ${p.id === "creator" ? "border-primary ring-1 ring-primary" : ""}`}>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm font-semibold">{p.name}</p>
+                    {p.id === "creator" && <span className="rounded-full bg-primary px-2 py-0.5 text-[10px] font-medium text-primary-foreground">Popular</span>}
+                  </div>
+                  <p className="mt-3">
+                    <span className="text-3xl font-semibold tracking-tight">{formatInr(p.priceInr)}</span>
+                    <span className="text-sm text-muted-foreground"> /month</span>
+                  </p>
+                  <p className="text-xs text-muted-foreground">{p.priceUsd > 0 ? `or ${formatUsd(p.priceUsd)}/month outside India` : "No card needed"}</p>
+                  <p className="mt-3 text-sm text-muted-foreground">{p.blurb}</p>
+                  <ul className="mt-4 flex-1 space-y-2 text-sm">
+                    {p.features.map((f) => (
+                      <li key={f} className="flex gap-2"><Check size={14} className="mt-0.5 shrink-0 text-emerald-600" /> {f}</li>
+                    ))}
+                  </ul>
+                  <Button asChild variant={p.id === "creator" ? "default" : "outline"} className="mt-5 h-9">
+                    <a href="#waitlist">Request access</a>
+                  </Button>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-muted-foreground">
+              Prices per month, billed monthly via Razorpay (₹) or Stripe ($). Cancel any time; you keep your plan until the end of the paid month.
+            </p>
           </div>
         </section>
 

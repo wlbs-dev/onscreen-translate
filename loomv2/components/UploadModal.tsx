@@ -64,7 +64,8 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
   const [errorMsg, setErrorMsg] = useState("")
   // The parent remounts this modal on every open (key), so state starts fresh
   const [lang, setLang]         = useState(rememberedLang)
-  const [quotaHit, setQuotaHit] = useState(false)
+  // Over the monthly quota (402); canUpgrade = you own the team, so you can change its plan
+  const [quotaHit, setQuotaHit] = useState<{ canUpgrade: boolean } | null>(null)
 
   // Auto-scroll log
   useEffect(() => {
@@ -108,7 +109,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
 
   async function handleTranslate(useAI: boolean = false) {
     if (!file) return
-    setLogLines([]); setProgress(0); setErrorMsg(""); setQuotaHit(false)
+    setLogLines([]); setProgress(0); setErrorMsg(""); setQuotaHit(null)
     try {
       setStage("uploading"); appendLog("Uploading video…")
       const form = new FormData(); form.append("video", file)
@@ -116,7 +117,7 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
       if (!upRes.ok) {
         const body = await upRes.json().catch(() => ({}))
         if (upRes.status === 401) { redirectToLogin(); return }
-        if (upRes.status === 402) setQuotaHit(true)
+        if (upRes.status === 402) setQuotaHit({ canUpgrade: !!body.canUpgrade })
         throw new Error(body.error ?? `Upload failed (${upRes.status})`)
       }
       const { jobId } = await upRes.json()
@@ -324,7 +325,11 @@ export default function UploadModal({ isOpen, onClose, onReady }: Props) {
                 <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3" data-testid="quota-error">
                   <p className="text-sm font-semibold text-amber-900">Monthly video limit reached</p>
                   <p className="mt-0.5 text-xs leading-relaxed text-amber-800">{errorMsg}</p>
-                  <p className="mt-1.5 text-xs text-amber-800">Need more minutes for the pilot? Use “Send feedback” in the account menu and we&apos;ll raise your quota.</p>
+                  <p className="mt-1.5 text-xs text-amber-800">
+                    {quotaHit.canUpgrade
+                      ? <>Need more minutes? <a href="/app/billing" className="font-medium underline underline-offset-2" data-testid="quota-upgrade">Upgrade your plan</a> — Creator gives your team 30 minutes a month, Pro 150.</>
+                      : <>Need more minutes? Ask your team owner to <a href="/app/billing" className="font-medium underline underline-offset-2" data-testid="quota-upgrade">upgrade the plan</a>.</>}
+                  </p>
                 </div>
               )}
 

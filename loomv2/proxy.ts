@@ -15,8 +15,15 @@ const PUBLIC_PATHS = new Set([
   "/api/fonts", // the bundled OFL fonts; the landing page uses them for native script names
 ])
 
+// Payment provider webhooks: server-to-server, so no session cookie and no
+// browser Origin. They verify their own HMAC signatures. (Also left out of
+// the matcher below; listed here too in case the matcher changes.)
+const WEBHOOK_PATHS = new Set(["/api/billing/razorpay/webhook", "/api/billing/stripe/webhook"])
+
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl
+
+  if (WEBHOOK_PATHS.has(pathname)) return NextResponse.next()
 
   if (isStateChanging(request.method) && !isSameOrigin(request.headers)) {
     return NextResponse.json({ error: "Cross-site request blocked" }, { status: 403 })
@@ -42,5 +49,6 @@ export const config = {
   // routes with large request bodies: when proxy runs, Next buffers the body
   // and truncates it at 10 MB (proxyClientMaxBodySize). /api/upload and
   // /api/detections do the full session + CSRF + ownership checks themselves.
-  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/upload|api/detections|.*\\.(?:svg|png|jpg|ico)$).*)"],
+  // Billing webhooks are skipped too: they read the raw body for signatures.
+  matcher: ["/((?!_next/static|_next/image|favicon.ico|api/upload|api/detections|api/billing/razorpay/webhook|api/billing/stripe/webhook|.*\\.(?:svg|png|jpg|ico)$).*)"],
 }
