@@ -139,19 +139,19 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 
 ## Roadmap
 
-**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads · bold text matched automatically · admin-issued password reset links · `selftest.py`
+**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads · bold text matched automatically · password reset links (admin-issued or emailed) · `selftest.py`
 
 **OCR + Translation**
 - Erasing: static scenes reuse the real background from frames before/after the text when it animates in/out, otherwise inpaint; moving backgrounds are inpainted frame by frame along the text strokes. Text that stays on a busy *static* texture for the whole video still smudges a little — a learned inpainting model (e.g. LaMa via ONNX) is the next step there
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Translate into several languages from one OCR pass
 
-**Accounts + pilot (done):** invite-only accounts, per-user job isolation, monthly minute quotas, admin page (users, invites, waitlist, feedback), landing page with waitlist, in-app feedback
+**Accounts + pilot (done):** invite-only accounts, teams with shared videos, per-team monthly minute quotas, admin page (users, teams, invites, waitlist, feedback), landing page with waitlist and pricing, in-app feedback, email (invites, password reset, "your video is ready"), payments (Razorpay for INR, Stripe for USD)
 
 **Before opening sign-ups**
-- Password reset and email (invites are links you copy; resets mean editing `users.json`)
-- Teams / shared workspaces (today each job belongs to one user)
-- Payments (Razorpay for INR, Stripe for USD) wired to the plan/quota fields that already exist
+- Plan changes without cancelling first (Razorpay plan switch; Stripe already allows it in its portal), proration, invoices/GST details on the billing page
+- Team roles beyond owner/member, transferring ownership, deleting a team
+- Email verification for open sign-ups (`SIGNUP_MODE=open`)
 
 **Infrastructure (when one server isn't enough)**
 - Postgres instead of JSON files for jobs/users; object storage for videos
@@ -190,8 +190,12 @@ onscreen-translate/
 │   │   ├── languages.ts            # Target languages (mirror of scripts/languages.py)
 │   │   ├── auth.ts                 # Signed session cookies (Web Crypto)
 │   │   ├── access.ts               # requireUser / requireAdmin / requireJobAccess for routes
-│   │   ├── users.ts, invites.ts    # Accounts and single-use invites (JSON in WORKSPACE)
-│   │   ├── usage.ts                # Append-only minutes ledger + monthly quota
+│   │   ├── users.ts, invites.ts    # Accounts and single-use (team) invites (JSON in WORKSPACE)
+│   │   ├── teams.ts                # Teams, members, plan + billing state, lazy migration
+│   │   ├── usage.ts                # Append-only minutes ledger + per-team monthly quota
+│   │   ├── mail.ts, notify.ts      # SMTP email (outbox fallback), templates, "video ready" emails
+│   │   ├── plans.ts                # Plans and prices (free / creator / pro / pilot)
+│   │   ├── billing/                # Razorpay + Stripe REST clients, webhooks, idempotency
 │   │   └── editor/                 # Undo history, font sizing, preview fonts
 │   ├── proxy.ts                    # Session + CSRF gate (Next 16's renamed middleware)
 │   └── instrumentation.ts          # Startup: recover interrupted jobs, sweep expired ones
@@ -246,12 +250,36 @@ The timeline uses a **multi-lane system** — events are automatically placed on
 The app is invite-only by default. Signed-out visitors see the landing page at `/` (with a waitlist form); the app itself lives at `/app`.
 
 - **First account = admin.** While there are no users, `/signup` needs no invite and the account it creates is the admin.
-- **Invites.** On `/admin` the admin creates single-use invite codes (optionally locked to one email) and copies the `/signup?invite=CODE` link. `SIGNUP_MODE=open` lets anyone sign up instead.
-- **Quotas.** Each upload is measured with ffprobe and counts against the uploader's monthly minutes (calendar month, UTC; `DEFAULT_MONTHLY_MINUTES`, default 60; admins are unlimited). An upload that would go over is refused with a 402. Usage is an append-only ledger, so deleting a video doesn't give minutes back. The admin can change a user's quota or disable the account on `/admin`.
-- **Ownership.** Members see only their own videos; admins see everyone's. Jobs created before accounts existed (no owner) are visible to admins only.
+- **Invites.** On `/admin` the admin creates single-use invite codes (optionally locked to one email, in which case it's also emailed) and copies the `/signup?invite=CODE` link. `SIGNUP_MODE=open` lets anyone sign up instead.
+- **Teams.** Every user is in at least one team; videos, minutes and the plan belong to the team. Signing up with an admin invite creates a personal team ("Asha's team") with you as owner. On **`/app/team`** the owner renames the team, invites people by email (single-use, locked to that address; emailed when SMTP is set up, otherwise shown as a link to copy), revokes invites and removes members; members can leave (but not their only team, and a team always keeps one owner). Signing up with a team invite joins that team instead of creating one; someone who already has an account opens the link while signed in and clicks **Accept invite**. With more than one team, the account menu has a team switcher (the active team is the `ot_team` cookie, re-checked against membership on every request).
+- **Who sees what.** Members of a team see and edit all of its videos (the card says who uploaded it). Anyone outside the team gets a 404. Removing a member takes their access away immediately. Admins see every video. Jobs created before accounts existed (no owner) are visible to admins only.
+- **Quotas.** Each upload is measured with ffprobe and counts against the active team's monthly minutes (calendar month, UTC). New teams get `DEFAULT_PLAN` (default `pilot`) with `DEFAULT_MONTHLY_MINUTES` (default 60); paid plans set their own (see [Payments](#payments)). Teams owned by an admin are unlimited. An upload that would go over is refused with a 402 and a link to `/app/billing`. Usage is an append-only ledger, so deleting a video doesn't give minutes back. The admin changes a team's plan and quota on `/admin` → Teams, and disables accounts on `/admin` → Users.
+- **Forgot password.** "Forgot password?" on `/login` emails a single-use reset link (24 hours; same answer whether or not the account exists; rate-limited per IP and per address). Admins can still create a link by hand: `/admin` → Users → **Reset link**. Resetting signs the user out everywhere else.
+- **Notifications.** The person who started it gets "your video is ready to review" when OCR + translation finish and "your render is ready" when a render finishes. "Email me when videos are ready" in the account menu turns these off.
 - **Feedback.** "Send feedback" in the account menu and "Report a problem with this video" on a video card land on `/admin` → Feedback.
 
-Everything is stored as JSON next to the jobs: `<WORKSPACE>/users.json`, `invites.json`, `usage.json`, `waitlist.json`, `feedback.json`. To reset a forgotten admin password, delete that user from `users.json` (or the whole file to start over with a new first admin).
+Everything is stored as JSON next to the jobs: `<WORKSPACE>/users.json`, `teams.json`, `invites.json`, `usage.json`, `password_resets.json`, `billing_events.json`, `waitlist.json`, `feedback.json`, plus `outbox/` when email isn't configured.
+
+**Upgrading from before teams** needs nothing: the first time an existing user is loaded they get a personal team with their old plan and monthly minutes, their jobs move to it the first time they're opened or listed, and this month's usage keeps counting.
+
+## Email
+
+Set `SMTP_URL` and `MAIL_FROM` and the app sends mail through any SMTP provider (`smtps://user:pass@smtp.resend.com:465`, Amazon SES, Postmark, Gmail with an app password …). Also set **`APP_URL`** to the public address (`https://transedit.yourdomain.com`): links in emails use it, and without it they're built from the request's `Host` header, which a client can forge.
+
+Without `SMTP_URL` nothing breaks: every message (invites, password resets, welcome, "your video is ready") is written to `<WORKSPACE>/outbox/<timestamp>-<id>.json` (`to`, `subject`, `text`, `html`) and one line is logged, so you can open the file and forward the link by hand. Tests read mail the same way. Sending never fails a request, and message bodies (which contain links) and the SMTP URL are never logged.
+
+## Payments
+
+Plans live in `loomv2/lib/plans.ts`: **Free** (₹0, 10 minutes a month), **Creator** (₹999 / $15 a month, 30 minutes), **Pro** (₹3,499 / $49 a month, 150 minutes). **Pilot** is only set by an admin, with any number of minutes. The landing page's pricing section and `/app/billing` read from that file.
+
+Two providers, each switched on only when its variables are set (both can be on: customers in India pay in ₹ through Razorpay, others in $ through Stripe). No SDKs: plain `fetch` to their REST APIs.
+
+- **Razorpay** (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_PLAN_CREATOR`, `RAZORPAY_PLAN_PRO`). Create two monthly plans in the Razorpay dashboard and put their ids in the plan variables. Add a webhook to `https://<your domain>/api/billing/razorpay/webhook` with the events `subscription.activated`, `subscription.charged`, `subscription.pending`, `subscription.halted`, `subscription.cancelled`, `subscription.completed`, and the same secret as `RAZORPAY_WEBHOOK_SECRET`.
+- **Stripe** (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_PRICE_CREATOR`, `STRIPE_PRICE_PRO`). Create two recurring monthly prices and put their ids in the price variables. Add a webhook endpoint to `https://<your domain>/api/billing/stripe/webhook` for `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted` and `invoice.paid`, and put its signing secret in `STRIPE_WEBHOOK_SECRET`. Turn on the customer portal in the Stripe dashboard for **Manage billing**.
+
+How it works: on `/app/billing` the team owner picks a plan (members see it read-only). Upgrading creates a Razorpay subscription or a Stripe Checkout session and sends the browser to the provider's page. **Only webhooks change a team's plan**: coming back to the success URL proves nothing. Webhooks are verified with HMAC-SHA256 over the raw body (Stripe's signature must also be under 5 minutes old), processed once each (`billing_events.json`), and are the only routes outside the session/CSRF checks. A paid event sets the team's plan and minutes; cancelling (Razorpay: **Cancel subscription**, at the end of the cycle; Stripe: **Manage billing**) keeps the plan until the paid period ends, then drops the team to Free; a halted Razorpay subscription or a deleted Stripe one drops it at once. To switch plans, Stripe customers use the portal; Razorpay customers cancel and subscribe again when the period ends.
+
+With no provider configured, the billing page says "Contact us to upgrade" and admins change plans by hand on `/admin` → Teams. `RAZORPAY_API_BASE` / `STRIPE_API_BASE` point the clients at a mock server for testing.
 
 ## Running it for other people
 
@@ -289,13 +317,13 @@ cd loomv2 && npx tsc --noEmit && npm run lint
 
 ## Security
 
-Every page except the landing, sign-in and sign-up pages, and every API route except `health`, `login`, `logout`, `signup`, `waitlist` and `fonts`, needs a signed-in account.
+Every page except the landing, sign-in, sign-up, forgot-password and reset pages, and every API route except `health`, `login`, `logout`, `signup`, `forgot`, `reset`, `waitlist`, `fonts` and the two billing webhooks (which check the provider's signature instead), needs a signed-in account.
 
 - **Sessions** are an `ot_session` cookie (`HttpOnly`, `SameSite=Lax`, 14 days): `{uid, exp}` signed with HMAC-SHA256 using `SESSION_SECRET`. Without one (local dev), a random secret is generated once into `<WORKSPACE>/.session_secret`. Changing the secret signs everyone out.
-- **Two layers.** `loomv2/proxy.ts` rejects requests without a valid, unexpired cookie. Each route handler then calls `lib/access.ts` (`requireUser` / `requireAdmin` / `requireJobAccess`), which loads the user, rejects disabled accounts and checks job ownership. Someone else's job is a 404, not a 403. `/api/upload` and `/api/detections` skip the proxy, because Next truncates proxied request bodies at 10 MB, so those two routes rely on their own checks.
+- **Two layers.** `loomv2/proxy.ts` rejects requests without a valid, unexpired cookie. Each route handler then calls `lib/access.ts` (`requireUser` / `requireAdmin` / `requireJobAccess`), which loads the user, rejects disabled accounts and checks that the job belongs to one of the user's teams. Another team's job is a 404, not a 403. `/api/upload` and `/api/detections` skip the proxy, because Next truncates proxied request bodies at 10 MB, so those two routes rely on their own checks.
 - **Passwords** are scrypt hashes with a per-user salt, compared in constant time; hashes never leave the server.
 - **CSRF.** State-changing requests whose `Sec-Fetch-Site` / `Origin` isn't this site get a 403, both in the proxy and in the route helpers.
-- **Rate limits** (in memory, per process): sign-in per IP + email, per IP and per email; sign-up and waitlist per IP; feedback per user. Behind a reverse proxy, make sure it sets `X-Forwarded-For`.
+- **Rate limits** (in memory, per process): sign-in per IP + email, per IP and per email; forgot-password per IP and per email; sign-up and waitlist per IP; feedback, team invites and checkout per user. Behind a reverse proxy, make sure it sets `X-Forwarded-For`.
 
 `npm run dev` / `npm start` still bind to `127.0.0.1`; use `start:public` to listen on a network.
 

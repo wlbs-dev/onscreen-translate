@@ -12,12 +12,16 @@ export interface User {
   name: string
   passwordHash: string
   role: Role
-  plan: string           // "pilot", "free", …
-  monthlyMinutes: number // video minutes per calendar month (UTC); admins are unlimited
+  /** Legacy: plan and quota now live on the user's team (lib/teams.ts). Only read when migrating. */
+  plan: string
+  /** Legacy, see plan. */
+  monthlyMinutes: number
   createdAt: number
   disabled?: boolean
   /** ms; sessions issued before this are rejected (set on password reset) */
   sessionsValidAfter?: number
+  /** "Your video is ready" / "your render is ready" emails (default on) */
+  emailNotifications?: boolean
 }
 
 /** A user as it may leave the server — never includes the password hash. */
@@ -95,7 +99,7 @@ export function createUser(input: {
 
 export function updateUser(
   id: string,
-  patch: Partial<Pick<User, "name" | "role" | "plan" | "monthlyMinutes" | "disabled" | "passwordHash" | "sessionsValidAfter">>
+  patch: Partial<Pick<User, "name" | "role" | "plan" | "monthlyMinutes" | "disabled" | "passwordHash" | "sessionsValidAfter" | "emailNotifications">>
 ): User | undefined {
   const users = listUsers()
   const user = users.find((u) => u.id === id)

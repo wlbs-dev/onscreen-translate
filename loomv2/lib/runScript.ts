@@ -12,6 +12,7 @@
 import { spawn, ChildProcess } from "child_process"
 import { JobStage, appendLogs, getJob, updateStage } from "./jobStore"
 import { SCRIPTS_DIR } from "./jobPaths"
+import { notifyStageDone, type StageNotify } from "./notify"
 
 export interface RunScriptOpts {
   jobId: string
@@ -22,6 +23,8 @@ export interface RunScriptOpts {
   cwd?: string
   // Extra progress parser (0–100) for scripts that don't emit PROGRESS: lines
   parseProgress?: (line: string) => number | null
+  // Email this user when the stage finishes successfully (translate/render only)
+  notify?: StageNotify
 }
 
 interface QueueState {
@@ -173,6 +176,7 @@ function execute(opts: RunScriptOpts, onSpawn: (p: ChildProcess) => void): Promi
       flush()
       if (code === 0) {
         updateStage(jobId, stage, { status: "done", progress: 100, message: "Done" })
+        notifyStageDone(jobId, stage, opts.notify)
       } else {
         const why = signal ? `Stopped (${signal})` : `Exited with code ${code}`
         updateStage(jobId, stage, {

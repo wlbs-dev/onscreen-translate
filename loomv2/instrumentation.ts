@@ -10,6 +10,12 @@ export async function register() {
     console.log("[startup] SESSION_SECRET not set — using the generated secret in <workspace>/.session_secret")
   }
 
+  if (!process.env.SMTP_URL?.trim()) {
+    console.log("[startup] SMTP_URL not set — emails are written to <workspace>/outbox/ instead of sent")
+  } else if (!process.env.APP_URL?.trim()) {
+    console.warn("[startup] SMTP_URL is set but APP_URL isn't — links in emails will use the request's Host header. Set APP_URL to your public URL.")
+  }
+
   const { recoverInterruptedJobs, sweepExpiredJobs } = await import("./lib/jobStore")
   const recovered = recoverInterruptedJobs()
   if (recovered) console.log(`[startup] marked ${recovered} interrupted job(s) as failed`)

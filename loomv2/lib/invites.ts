@@ -1,4 +1,7 @@
-// lib/invites.ts — single-use signup invites in <WORKSPACE>/invites.json.
+// lib/invites.ts — single-use invites in <WORKSPACE>/invites.json.
+// Admin invites (no teamId) let someone sign up; they get a personal team.
+// Team invites (teamId, from a team owner) are locked to one email: signing
+// up with one joins that team instead, and a signed-in user can accept one.
 import path from "path"
 import { randomBytes } from "crypto"
 import { WORKSPACE } from "./workspace"
@@ -6,11 +9,13 @@ import { readJsonFile, writeJsonFileAtomic } from "./jsonFile"
 
 export interface Invite {
   code: string
-  createdBy: string   // admin user id
+  createdBy: string   // user id (an admin, or the team owner for team invites)
   createdAt: number
   email?: string      // if set, only this email may use the invite
   usedBy?: string     // user id
   usedAt?: number
+  teamId?: string     // team invite: joining adds the user to this team
+  role?: "owner" | "member"
 }
 
 const INVITES_FILE = path.join(WORKSPACE, "invites.json")
@@ -27,13 +32,20 @@ export function listInvites(): Invite[] {
   return Array.isArray(invites) ? invites : []
 }
 
-export function createInvite(createdBy: string, email?: string): Invite {
-  const invites = listInvites()
+export function createInvite(
+  createdBy: string,
+  email?: string,
+  team?: { teamId: string; role?: "owner" | "member" }
+): Invite {
+  // A new team invite for the same address replaces the older unused one
+  const invites = listInvites().filter((i) =>
+    !(team && i.teamId === team.teamId && i.email === email && !i.usedBy))
   const invite: Invite = {
     code: randomBytes(12).toString("base64url"),
     createdBy,
     createdAt: Date.now(),
     ...(email ? { email } : {}),
+    ...(team ? { teamId: team.teamId, role: team.role ?? "member" } : {}),
   }
   invites.push(invite)
   writeJsonFileAtomic(INVITES_FILE, invites)

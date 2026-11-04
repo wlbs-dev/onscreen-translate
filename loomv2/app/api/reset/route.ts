@@ -25,13 +25,13 @@ export async function POST(req: NextRequest) {
   const reset = findReset(token)
   const user = reset ? getUserById(reset.userId) : undefined
   if (!reset || !user) {
-    return NextResponse.json({ error: "This reset link is invalid, used or expired. Ask your admin for a new one." }, { status: 400 })
+    return NextResponse.json({ error: "This reset link is invalid, used or expired. Request a new one from the sign-in page." }, { status: 400 })
   }
   if (user.disabled) return NextResponse.json({ error: "This account has been disabled." }, { status: 403 })
 
   const passwordHash = await hashPassword(password)
   if (!consumeReset(token)) {
-    return NextResponse.json({ error: "This reset link was just used. Ask your admin for a new one." }, { status: 400 })
+    return NextResponse.json({ error: "This reset link was just used. Request a new one from the sign-in page." }, { status: 400 })
   }
   // Every session issued before now (e.g. on a lost laptop) stops working
   updateUser(user.id, { passwordHash, sessionsValidAfter: Date.now() })

@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server"
 import { SESSION_COOKIE, sessionCookieOptions, signSession } from "../../../lib/auth"
-import { crossSiteBlocked } from "../../../lib/access"
+import { TEAM_COOKIE, crossSiteBlocked, teamCookieOptions } from "../../../lib/access"
 import { hashPassword } from "../../../lib/password"
 import { DuplicateEmailError, createUser, listUsers, normalizeEmail } from "../../../lib/users"
 import { getInvite, inviteProblem, markInviteUsed, signupMode } from "../../../lib/invites"
+import { addMember, createPersonalTeam, getTeam } from "../../../lib/teams"
 import { clientIp, consume, sleep } from "../../../lib/rateLimit"
+import { appUrl, sendMail, welcomeEmail } from "../../../lib/mail"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -50,6 +52,7 @@ export async function POST(req: NextRequest) {
   if (check) return NextResponse.json({ error: check.error }, { status: check.status })
   const bootstrap = listUsers().length === 0
   const invite = inviteCode ? getInvite(inviteCode) : undefined
+  const validInvite = invite && !inviteProblem(invite, email) ? invite : undefined
   let user
   try {
     user = createUser({ email, name, passwordHash, role: bootstrap ? "admin" : "member" })
@@ -59,11 +62,18 @@ export async function POST(req: NextRequest) {
     }
     throw err
   }
-  if (invite && !inviteProblem(invite, email)) markInviteUsed(invite.code, user.id)
+  // A team invite joins that team; anyone else gets a personal team
+  const inviteTeam = validInvite?.teamId ? getTeam(validInvite.teamId) : undefined
+  const team = inviteTeam
+    ? addMember(inviteTeam.id, user.id, validInvite?.role ?? "member")!
+    : createPersonalTeam(user)
+  if (validInvite) markInviteUsed(validInvite.code, user.id)
   if (bootstrap) console.log(`[signup] first account ${email} created as admin`)
+  void sendMail(welcomeEmail(user.email, { name: user.name, teamName: team.name, link: `${appUrl(req)}/app` }))
 
-  const res = NextResponse.json({ ok: true, role: user.role })
+  const res = NextResponse.json({ ok: true, role: user.role, teamId: team.id })
   res.cookies.set(SESSION_COOKIE, await signSession(user.id), sessionCookieOptions(req))
+  res.cookies.set(TEAM_COOKIE, team.id, teamCookieOptions(req))
   return res
 }
 

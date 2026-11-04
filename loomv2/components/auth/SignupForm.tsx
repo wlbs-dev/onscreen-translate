@@ -6,12 +6,14 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 
-export default function SignupForm({ invite: initialInvite, needsInvite }: {
+export default function SignupForm({ invite: initialInvite, needsInvite, email: initialEmail }: {
   invite?: string
   needsInvite: boolean
+  /** Prefilled from a team invite (which only works for that address) */
+  email?: string
 }) {
   const [name, setName]         = useState("")
-  const [email, setEmail]       = useState("")
+  const [email, setEmail]       = useState(initialEmail ?? "")
   const [password, setPassword] = useState("")
   const [invite, setInvite]     = useState(initialInvite ?? "")
   const [error, setError]       = useState("")

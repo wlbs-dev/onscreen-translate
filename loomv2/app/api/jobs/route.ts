@@ -3,8 +3,9 @@ import fs from "fs"
 import { jobPaths, isValidJobId } from "../../../lib/jobPaths"
 import { deleteJob, listJobs, updateJob } from "../../../lib/jobStore"
 import { cancelJob } from "../../../lib/runScript"
-import { canAccessJob, requireJobAccess, requireUser } from "../../../lib/access"
+import { activeTeam, jobTeamId, requireJobAccess, requireUser } from "../../../lib/access"
 import { listUsers } from "../../../lib/users"
+import { listTeams } from "../../../lib/teams"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -19,16 +20,27 @@ export async function GET(req: NextRequest) {
   const user = await requireUser(req)
   if (user instanceof Response) return user
 
-  // Admins see everyone's jobs, labelled with the owner when it isn't them
-  const emailById = user.role === "admin" ? new Map(listUsers().map((u) => [u.id, u.email])) : null
+  // Members see the active team's videos (uploaded by anyone in it); admins
+  // see every job. Cards show the uploader when it isn't you, and for admins
+  // the team when it isn't the active one.
+  const isAdmin = user.role === "admin"
+  const team = activeTeam(req, user)
+  const emailById = new Map(listUsers().map((u) => [u.id, u.email]))
+  const teamNameById = new Map(listTeams().map((t) => [t.id, t.name]))
   const ownerLabel = (ownerId?: string) => {
-    if (!emailById || ownerId === user.id) return undefined
+    if (ownerId === user.id) return undefined
     return ownerId ? emailById.get(ownerId) ?? "deleted user" : "no owner (legacy)"
+  }
+  const teamLabel = (teamId?: string) => {
+    if (!isAdmin || teamId === team.id) return undefined
+    return teamId ? teamNameById.get(teamId) ?? "deleted team" : "no team (legacy)"
   }
 
   const jobs = listJobs()
-    .filter((job) => isValidJobId(job.id) && canAccessJob(user, job))
-    .map((job) => ({
+    .filter((job) => isValidJobId(job.id))
+    .map((job) => ({ job, teamId: jobTeamId(job) }))
+    .filter(({ teamId }) => isAdmin || teamId === team.id)
+    .map(({ job, teamId }) => ({
       id:           job.id,
       createdAt:    job.createdAt,
       label:        job.label ?? job.sourceName ?? job.id.slice(0, 4),
@@ -37,6 +49,7 @@ export async function GET(req: NextRequest) {
       aiMode:       job.aiMode ?? false,
       durationSec:  job.durationSec ?? null,
       owner:        ownerLabel(job.ownerId),
+      team:         teamLabel(teamId),
       outputExists: fs.existsSync(jobPaths(job.id).output),
       ocr:          stageSummary(job.ocr),
       translate:    stageSummary(job.translate),

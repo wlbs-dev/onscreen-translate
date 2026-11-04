@@ -19,8 +19,8 @@ export default async function ResetPage({ searchParams }: {
   if (!reset || !user) {
     return (
       <AuthCard title="Link expired" footer={footer}
-        subtitle="This reset link is invalid, has already been used, or is more than 24 hours old. Ask the person who invited you for a new one." >
-        <span />
+        subtitle="This reset link is invalid, has already been used, or is more than 24 hours old." >
+        <Link href="/forgot" className="text-sm text-foreground underline underline-offset-4">Send me a new link</Link>
       </AuthCard>
     )
   }

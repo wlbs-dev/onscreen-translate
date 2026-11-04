@@ -1,7 +1,8 @@
 // lib/resets.ts — single-use password reset links in <WORKSPACE>/password_resets.json.
 //
-// There is no email yet: an admin creates a link for a user and sends it to
-// them however they like. Only a SHA-256 of the token is stored, links expire
+// Created by an admin (Admin → Users → Reset link, sent however they like) or
+// by the user via "Forgot password?" (/api/forgot emails it, createdBy =
+// "self"). Only a SHA-256 of the token is stored, links expire
 // after RESET_TTL_MS, and creating a new link revokes the user's older ones.
 import path from "path"
 import { createHash, randomBytes } from "crypto"
