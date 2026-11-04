@@ -14,13 +14,26 @@ interface AdminUser {
   email: string
   name: string
   role: "admin" | "member"
-  plan: string
-  monthlyMinutes: number
   createdAt: number
   disabled?: boolean
   minutesUsed: number
-  minutesQuota: number | null
+  teams: { id: string; name: string; role: "owner" | "member" | null }[]
 }
+
+interface AdminTeam {
+  id: string
+  name: string
+  createdAt: number
+  plan: string
+  planName: string
+  monthlyMinutes: number
+  minutesUsed: number
+  minutesQuota: number | null
+  billing: { provider: string; status: string; currentPeriodEnd?: number; cancelAtPeriodEnd?: boolean } | null
+  members: { userId: string; role: "owner" | "member"; email: string; name: string }[]
+}
+
+interface PlanOption { id: string; name: string; monthlyMinutes: number }
 
 interface Invite {
   code: string
@@ -30,6 +43,7 @@ interface Invite {
   createdByEmail: string | null
   usedByEmail: string | null
   usedBy?: string
+  teamName: string | null
 }
 
 interface WaitlistEntry {
@@ -86,11 +100,11 @@ function CopyButton({ text, label = "Copy link" }: { text: string; label?: strin
   )
 }
 
-function QuotaCell({ user, onSave }: { user: AdminUser; onSave: (minutes: number) => Promise<void> }) {
-  const [draft, setDraft] = useState(String(user.monthlyMinutes))
+function QuotaCell({ team, onSave }: { team: AdminTeam; onSave: (minutes: number) => Promise<void> }) {
+  const [draft, setDraft] = useState(String(team.monthlyMinutes))
   const [busy, setBusy] = useState(false)
-  if (user.role === "admin") return <span className="text-muted-foreground">unlimited</span>
-  const dirty = draft !== String(user.monthlyMinutes)
+  if (team.minutesQuota == null) return <span className="text-muted-foreground" title="Owned by an admin">unlimited</span>
+  const dirty = draft !== String(team.monthlyMinutes)
   return (
     <form
       className="flex items-center gap-1.5"
@@ -101,7 +115,7 @@ function QuotaCell({ user, onSave }: { user: AdminUser; onSave: (minutes: number
       }}
     >
       <Input
-        aria-label={`Monthly minutes for ${user.email}`}
+        aria-label={`Monthly minutes for ${team.name}`}
         type="number" min={0} step="any" value={draft}
         onChange={(e) => setDraft(e.target.value)}
         className="h-7 w-20 text-xs"
@@ -116,6 +130,8 @@ function QuotaCell({ user, onSave }: { user: AdminUser; onSave: (minutes: number
 export default function AdminPanel() {
   const [tab, setTab] = useState("users")
   const [users, setUsers] = useState<AdminUser[]>([])
+  const [teams, setTeams] = useState<AdminTeam[]>([])
+  const [plans, setPlans] = useState<PlanOption[]>([])
   const [me, setMe] = useState("")
   const [invites, setInvites] = useState<Invite[]>([])
   const [waitlist, setWaitlist] = useState<WaitlistEntry[]>([])
@@ -137,13 +153,14 @@ export default function AdminPanel() {
 
   const reload = useCallback(async () => {
     try {
-      const [u, i, w, f] = await Promise.all([
+      const [u, t, i, w, f] = await Promise.all([
         api<{ users: AdminUser[]; me: string }>("/api/admin/users"),
+        api<{ teams: AdminTeam[]; plans: PlanOption[] }>("/api/admin/teams"),
         api<{ invites: Invite[] }>("/api/admin/invites"),
         api<{ entries: WaitlistEntry[] }>("/api/admin/waitlist"),
         api<{ entries: FeedbackEntry[] }>("/api/admin/feedback"),
       ])
-      setUsers(u.users); setMe(u.me); setInvites(i.invites); setWaitlist(w.entries); setFeedback(f.entries)
+      setUsers(u.users); setMe(u.me); setTeams(t.teams); setPlans(t.plans); setInvites(i.invites); setWaitlist(w.entries); setFeedback(f.entries)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load")
     }
@@ -158,6 +175,16 @@ export default function AdminPanel() {
     setError("")
     try {
       await api("/api/admin/users", { method: "PATCH", body: JSON.stringify({ id, ...patch }) })
+      await reload()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Update failed")
+    }
+  }
+
+  const patchTeam = async (id: string, patch: { plan?: string; monthlyMinutes?: number }) => {
+    setError("")
+    try {
+      await api("/api/admin/teams", { method: "PATCH", body: JSON.stringify({ id, ...patch }) })
       await reload()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Update failed")
@@ -203,6 +230,7 @@ export default function AdminPanel() {
             <Tabs value={tab} onValueChange={setTab}>
               <TabsList>
                 <TabsTrigger value="users">Users ({users.length})</TabsTrigger>
+                <TabsTrigger value="teams">Teams ({teams.length})</TabsTrigger>
                 <TabsTrigger value="invites">Invites ({unused} unused)</TabsTrigger>
                 <TabsTrigger value="waitlist">Waitlist ({waitlist.length})</TabsTrigger>
                 <TabsTrigger value="feedback">Feedback ({feedback.length})</TabsTrigger>
@@ -254,9 +282,8 @@ export default function AdminPanel() {
                   <tr>
                     <th className="px-3 py-2 font-medium">User</th>
                     <th className="px-3 py-2 font-medium">Role</th>
-                    <th className="px-3 py-2 font-medium">Plan</th>
-                    <th className="px-3 py-2 font-medium">Used this month</th>
-                    <th className="px-3 py-2 font-medium">Monthly quota (min)</th>
+                    <th className="px-3 py-2 font-medium">Teams</th>
+                    <th className="px-3 py-2 font-medium">Uploaded this month (min)</th>
                     <th className="px-3 py-2 font-medium">Created</th>
                     <th className="px-3 py-2 font-medium">Status</th>
                   </tr>
@@ -271,13 +298,14 @@ export default function AdminPanel() {
                       <td className="px-3 py-2">
                         <Badge variant={u.role === "admin" ? "default" : "outline"} className="text-[10px]">{u.role}</Badge>
                       </td>
-                      <td className="px-3 py-2 text-xs">{u.plan}</td>
-                      <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">
-                        {u.minutesUsed} {u.minutesQuota != null && <span className="text-muted-foreground">/ {u.minutesQuota}</span>}
+                      <td className="px-3 py-2 text-xs">
+                        {u.teams.map((t) => (
+                          <span key={t.id} className="block truncate max-w-48" title={t.name}>
+                            {t.name}{t.role === "owner" && <span className="text-muted-foreground"> · owner</span>}
+                          </span>
+                        ))}
                       </td>
-                      <td className="px-3 py-2">
-                        <QuotaCell key={u.monthlyMinutes} user={u} onSave={(m) => patchUser(u.id, { monthlyMinutes: m })} />
-                      </td>
+                      <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">{u.minutesUsed}</td>
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(u.createdAt)}</td>
                       <td className="px-3 py-2">
                         {u.id === me ? (
@@ -307,6 +335,63 @@ export default function AdminPanel() {
             </div>
           )}
 
+          {tab === "teams" && (
+            <div className="overflow-x-auto rounded-xl border">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-left text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">Team</th>
+                    <th className="px-3 py-2 font-medium">Members</th>
+                    <th className="px-3 py-2 font-medium">Plan</th>
+                    <th className="px-3 py-2 font-medium">Used this month</th>
+                    <th className="px-3 py-2 font-medium">Monthly quota (min)</th>
+                    <th className="px-3 py-2 font-medium">Billing</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {teams.map((t) => (
+                    <tr key={t.id} className="border-t align-middle" data-testid={`team-row-${t.name}`}>
+                      <td className="px-3 py-2">
+                        <p className="font-medium">{t.name}</p>
+                        <p className="text-xs text-muted-foreground">created {fmtDate(t.createdAt)}</p>
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        {t.members.map((m) => (
+                          <span key={m.userId} className="block truncate max-w-56" title={m.email}>
+                            {m.email}{m.role === "owner" && <span className="text-muted-foreground"> · owner</span>}
+                          </span>
+                        ))}
+                      </td>
+                      <td className="px-3 py-2">
+                        <select
+                          aria-label={`Plan for ${t.name}`} value={t.plan}
+                          onChange={(e) => patchTeam(t.id, { plan: e.target.value })}
+                          className="h-7 rounded-md border bg-background px-1.5 text-xs"
+                          data-testid={`plan-${t.name}`}
+                        >
+                          {!plans.some((p) => p.id === t.plan) && <option value={t.plan}>{t.planName}</option>}
+                          {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs whitespace-nowrap">
+                        {t.minutesUsed} {t.minutesQuota != null && <span className="text-muted-foreground">/ {t.minutesQuota}</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        <QuotaCell key={t.monthlyMinutes} team={t} onSave={(m) => patchTeam(t.id, { monthlyMinutes: m })} />
+                      </td>
+                      <td className="px-3 py-2 text-xs whitespace-nowrap">
+                        {t.billing
+                          ? <>{t.billing.provider} · {t.billing.status}{t.billing.cancelAtPeriodEnd ? " (cancels)" : ""}
+                              {t.billing.currentPeriodEnd && <span className="block text-muted-foreground">until {fmtDate(t.billing.currentPeriodEnd)}</span>}</>
+                          : <span className="text-muted-foreground">—</span>}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
           {tab === "invites" && (
             <div className="overflow-x-auto rounded-xl border">
               <table className="w-full text-sm">
@@ -326,7 +411,10 @@ export default function AdminPanel() {
                   {invites.map((i) => (
                     <tr key={i.code} className="border-t">
                       <td className="px-3 py-2 font-mono text-xs">{i.code}</td>
-                      <td className="px-3 py-2 text-xs">{i.email ?? <span className="text-muted-foreground">anyone</span>}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {i.email ?? <span className="text-muted-foreground">anyone</span>}
+                        {i.teamName && <span className="block text-muted-foreground">to team {i.teamName}</span>}
+                      </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap">{fmtDate(i.createdAt)}</td>
                       <td className="px-3 py-2 text-xs">
                         {i.usedBy

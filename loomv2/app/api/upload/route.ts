@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from "next/server"
 import { writeFile, mkdir } from "fs/promises"
 import { createJob, deleteJob, updateJob } from "../../../lib/jobStore"
 import { jobPaths } from "../../../lib/jobPaths"
-import { requireUser } from "../../../lib/access"
+import { requireTeam } from "../../../lib/access"
 import { probeDurationSec } from "../../../lib/probe"
-import { monthBounds, quotaMinutes, recordUsage, secondsUsedThisMonth, toMinutes } from "../../../lib/usage"
+import { monthBounds, recordUsage, teamQuotaMinutes, teamSecondsUsedThisMonth, toMinutes } from "../../../lib/usage"
+import { isOwner } from "../../../lib/teams"
 import { randomUUID } from "crypto"
 
 export const runtime = "nodejs"
@@ -13,32 +14,37 @@ export const dynamic = "force-dynamic"
 // Upper bound on an uploaded video; override with MAX_UPLOAD_MB
 const maxUploadBytes = () => Number(process.env.MAX_UPLOAD_MB ?? 500) * 1024 * 1024
 
-function quotaExceeded(usedSec: number, quotaMin: number, videoSec: number | null) {
+function quotaExceeded(usedSec: number, quotaMin: number, videoSec: number | null, canUpgrade: boolean) {
   const resets = new Date(monthBounds().end).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" })
   const left = Math.max(0, quotaMin - usedSec / 60)
   const leftText = left > 0 && left < 0.1 ? "less than 0.1" : String(toMinutes(left * 60))
   const videoText = videoSec != null && videoSec < 6 ? `${Math.round(videoSec)} s` : `${toMinutes(videoSec ?? 0)} min`
   const error = videoSec == null
-    ? `You've used all ${quotaMin} minutes of your monthly quota. It resets on ${resets}.`
-    : `This video is ${videoText}, but you have ${leftText} of your ${quotaMin} monthly minutes left. Your quota resets on ${resets}.`
+    ? `Your team has used all ${quotaMin} minutes of its monthly quota. It resets on ${resets}.`
+    : `This video is ${videoText}, but your team has ${leftText} of its ${quotaMin} monthly minutes left. The quota resets on ${resets}.`
   return NextResponse.json({
     error,
     code: "quota_exceeded",
     minutesUsed: toMinutes(usedSec),
     minutesQuota: quotaMin,
     videoMinutes: videoSec == null ? null : toMinutes(videoSec),
+    upgradeUrl: "/app/billing",
+    canUpgrade, // team owners can change the plan; members ask their owner
   }, { status: 402 })
 }
 
 // Not matched by proxy.ts (it would truncate bodies over 10 MB), so this
-// route's own requireUser() is the session + CSRF check
+// route's own requireTeam() is the session + CSRF check. The video goes to
+// the active team and counts against that team's monthly minutes.
 export async function POST(req: NextRequest) {
-  const user = await requireUser(req)
-  if (user instanceof Response) return user
+  const access = await requireTeam(req)
+  if (access instanceof Response) return access
+  const { user, team } = access
+  const canUpgrade = isOwner(team, user.id)
 
-  const quota = quotaMinutes(user)
-  if (quota != null && secondsUsedThisMonth(user.id) >= quota * 60) {
-    return quotaExceeded(secondsUsedThisMonth(user.id), quota, null)
+  const quota = teamQuotaMinutes(team)
+  if (quota != null && teamSecondsUsedThisMonth(team.id) >= quota * 60) {
+    return quotaExceeded(teamSecondsUsedThisMonth(team.id), quota, null, canUpgrade)
   }
 
   let jobId: string | null = null
@@ -57,7 +63,7 @@ export async function POST(req: NextRequest) {
 
     jobId = randomUUID()
     const sourceName = file.name.slice(0, 200)
-    createJob(jobId, { sourceName, label: sourceName.replace(/\.[^.]+$/, "") || undefined, ownerId: user.id })
+    createJob(jobId, { sourceName, label: sourceName.replace(/\.[^.]+$/, "") || undefined, ownerId: user.id, teamId: team.id })
 
     const paths = jobPaths(jobId)
     await mkdir(paths.framesDir, { recursive: true })
@@ -74,15 +80,15 @@ export async function POST(req: NextRequest) {
 
     // Check and record in one synchronous step so parallel uploads can't
     // both squeeze under the quota
-    const usedSec = secondsUsedThisMonth(user.id)
+    const usedSec = teamSecondsUsedThisMonth(team.id)
     if (quota != null && usedSec + durationSec > quota * 60) {
       deleteJob(jobId)
-      return quotaExceeded(usedSec, quota, durationSec)
+      return quotaExceeded(usedSec, quota, durationSec, canUpgrade)
     }
-    recordUsage({ userId: user.id, jobId, durationSec, at: Date.now() })
+    recordUsage({ userId: user.id, teamId: team.id, jobId, durationSec, at: Date.now() })
     updateJob(jobId, { durationSec })
 
-    console.log(`[upload] Job ${jobId} (${durationSec.toFixed(1)} s) created by ${user.email}`)
+    console.log(`[upload] Job ${jobId} (${durationSec.toFixed(1)} s) created by ${user.email} in team ${team.id}`)
     return NextResponse.json({ jobId, status: "ok", filename: file.name, durationSec })
   } catch (err: unknown) {
     console.error("[upload]", err)

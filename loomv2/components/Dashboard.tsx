@@ -44,7 +44,8 @@ interface Job {
   aiMode: boolean
   outputExists: boolean
   durationSec?: number | null
-  owner?: string        // only for admins, on jobs uploaded by someone else
+  owner?: string        // uploader's email, when it isn't you (teammates' videos)
+  team?: string         // admins only: the job's team, when it isn't your active team
   ocr:       { status: string; progress: number; message?: string }
   translate: { status: string; progress: number; message?: string }
   render:    { status: string; progress: number; message?: string }
@@ -255,9 +256,11 @@ function JobCard({ job, onOpen, onRename, onDelete, onRetranslate }: {
           ))}
         </div>
 
-        {job.owner && (
-          <p className="text-[11px] text-muted-foreground truncate" title="Uploaded by">
-            Owner: <span className="text-foreground">{job.owner}</span>
+        {(job.owner || job.team) && (
+          <p className="text-[11px] text-muted-foreground truncate" data-testid="job-owner">
+            {job.owner && <>Uploaded by <span className="text-foreground">{job.owner}</span></>}
+            {job.owner && job.team && " · "}
+            {job.team && <>Team <span className="text-foreground">{job.team}</span></>}
           </p>
         )}
 
