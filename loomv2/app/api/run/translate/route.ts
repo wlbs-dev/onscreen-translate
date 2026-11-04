@@ -5,6 +5,7 @@ import { requireJobAccess } from "../../../../lib/access"
 import { DEFAULT_LANG, isSupportedLang } from "../../../../lib/languages"
 import { jobPaths, getPython, SCRIPTS_DIR } from "../../../../lib/jobPaths"
 import { runScript } from "../../../../lib/runScript"
+import { appUrl } from "../../../../lib/mail"
 import path from "path"
 
 export const runtime = "nodejs"
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
       ...(useAi ? ["--ai"] : []),
     ],
     cwd: SCRIPTS_DIR,
+    notify: { userId: access.user.id, baseUrl: appUrl(req) },
   })
 
   if (!started) return NextResponse.json({ error: "Translation is already running for this job" }, { status: 409 })

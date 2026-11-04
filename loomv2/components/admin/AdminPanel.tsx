@@ -132,6 +132,7 @@ export default function AdminPanel() {
   const [error, setError] = useState("")
   const [inviteEmail, setInviteEmail] = useState("")
   const [newInvite, setNewInvite] = useState<Invite | null>(null)
+  const [inviteEmailed, setInviteEmailed] = useState(false)
   const [creating, setCreating] = useState(false)
 
   const reload = useCallback(async () => {
@@ -167,10 +168,10 @@ export default function AdminPanel() {
     e.preventDefault()
     setCreating(true); setError("")
     try {
-      const { invite } = await api<{ invite: Invite }>("/api/admin/invites", {
+      const { invite, emailed } = await api<{ invite: Invite; emailed: boolean }>("/api/admin/invites", {
         method: "POST", body: JSON.stringify({ email: inviteEmail }),
       })
-      setNewInvite(invite); setInviteEmail("")
+      setNewInvite(invite); setInviteEmailed(emailed); setInviteEmail("")
       await reload()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't create invite")
@@ -228,6 +229,9 @@ export default function AdminPanel() {
             </form>
             {newInvite && (
               <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 sm:flex-row sm:items-center" data-testid="new-invite">
+                {inviteEmailed && newInvite.email && (
+                  <span className="text-xs text-emerald-700" data-testid="invite-emailed">Emailed to {newInvite.email}.</span>
+                )}
                 <code className="flex-1 break-all text-xs" data-testid="invite-link">{inviteLink(newInvite.code)}</code>
                 <CopyButton text={inviteLink(newInvite.code)} />
               </div>

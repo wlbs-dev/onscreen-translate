@@ -4,6 +4,7 @@ import { existsSync } from "fs"
 import { getJob } from "../../../lib/jobStore"
 import { jobPaths, getPython, SCRIPTS_DIR } from "../../../lib/jobPaths"
 import { isBusy, runScript } from "../../../lib/runScript"
+import { appUrl } from "../../../lib/mail"
 import path from "path"
 
 export const runtime = "nodejs"
@@ -50,6 +51,7 @@ export async function POST(req: NextRequest) {
       const m = line.match(/(\d+)\/(\d+) frames done/)
       return m ? Math.floor((parseInt(m[1]) / parseInt(m[2])) * 100) : null
     },
+    notify: { userId: access.user.id, baseUrl: appUrl(req) },
   })
 
   return NextResponse.json({ status: "started" })

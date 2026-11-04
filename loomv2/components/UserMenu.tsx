@@ -1,12 +1,13 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { LogOut, Shield, LayoutGrid, MessageSquare } from "lucide-react"
+import { LogOut, Shield, LayoutGrid, MessageSquare, Mail } from "lucide-react"
 import FeedbackDialog from "./FeedbackDialog"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -23,6 +24,7 @@ export interface Me {
   minutesUsed: number
   minutesQuota: number | null // null = unlimited
   resetsAt: number
+  emailNotifications: boolean
 }
 
 /** Fire after anything that changes usage (an upload) so the menu refreshes. */
@@ -65,6 +67,14 @@ export default function UserMenu() {
     const iv = setInterval(load, 60_000)
     return () => { alive = false; window.removeEventListener(USAGE_CHANGED_EVENT, load); clearInterval(iv) }
   }, [])
+
+  const toggleEmails = async (on: boolean) => {
+    setMe((m) => (m ? { ...m, emailNotifications: on } : m))
+    const res = await fetch("/api/me", {
+      method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ emailNotifications: on }),
+    }).catch(() => null)
+    if (!res?.ok) setMe((m) => (m ? { ...m, emailNotifications: !on } : m))
+  }
 
   if (!me) return <div className="h-7 w-7 rounded-full bg-muted animate-pulse" aria-hidden />
 
@@ -114,6 +124,15 @@ export default function UserMenu() {
         <DropdownMenuItem onSelect={() => { setFbKey((k) => k + 1); setFbOpen(true) }} className="gap-2" data-testid="send-feedback">
           <MessageSquare size={13} /> Send feedback
         </DropdownMenuItem>
+        <DropdownMenuCheckboxItem
+          checked={me.emailNotifications}
+          onSelect={(e) => e.preventDefault()}
+          onCheckedChange={toggleEmails}
+          className="gap-2"
+          data-testid="email-notifications"
+        >
+          <Mail size={13} /> Email me when videos are ready
+        </DropdownMenuCheckboxItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onSelect={logout} className="gap-2" data-testid="logout">
           <LogOut size={13} /> Sign out

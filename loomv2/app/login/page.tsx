@@ -20,7 +20,8 @@ export default async function LoginPage({ searchParams }: {
       subtitle="Welcome back. Sign in to your pilot account."
       footer={
         <>
-          Forgot your password? Ask your admin for a reset link.
+          <Link href="/forgot" className="text-foreground underline underline-offset-4" data-testid="forgot-link">Forgot password?</Link>
+          {" "}We&apos;ll email you a reset link.
           <br />
           Have an invite? <Link href="/signup" className="text-foreground underline underline-offset-4">Create your account</Link>
           {" · "}

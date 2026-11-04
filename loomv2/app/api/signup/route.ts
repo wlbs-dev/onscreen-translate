@@ -5,6 +5,7 @@ import { hashPassword } from "../../../lib/password"
 import { DuplicateEmailError, createUser, listUsers, normalizeEmail } from "../../../lib/users"
 import { getInvite, inviteProblem, markInviteUsed, signupMode } from "../../../lib/invites"
 import { clientIp, consume, sleep } from "../../../lib/rateLimit"
+import { appUrl, sendMail, welcomeEmail } from "../../../lib/mail"
 
 export const runtime = "nodejs"
 export const dynamic = "force-dynamic"
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
   }
   if (invite && !inviteProblem(invite, email)) markInviteUsed(invite.code, user.id)
   if (bootstrap) console.log(`[signup] first account ${email} created as admin`)
+  void sendMail(welcomeEmail(user.email, { name: user.name, link: `${appUrl(req)}/app` }))
 
   const res = NextResponse.json({ ok: true, role: user.role })
   res.cookies.set(SESSION_COOKIE, await signSession(user.id), sessionCookieOptions(req))
