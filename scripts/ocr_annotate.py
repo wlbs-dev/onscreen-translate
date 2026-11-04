@@ -28,7 +28,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from colors import border_median_rgb, rgb_to_hex
-from erase import text_color as erase_text_color
+from erase import is_bold, text_color as erase_text_color
 from media import ensure_browser_playable
 
 
@@ -333,10 +333,12 @@ def main() -> None:
             if not saved_words:
                 continue
             bg = border_median_rgb(raw_img, block["bbox"])
-            fg = None
+            fg, bold = None, False
             if raw_img is not None:
                 bx1, by1, bx2, by2 = block["bbox"]
-                fg = erase_text_color(raw_img[max(0, by1):by2, max(0, bx1):bx2], by2 - by1)
+                crop = raw_img[max(0, by1):by2, max(0, bx1):bx2]
+                fg = erase_text_color(crop, by2 - by1)
+                bold = is_bold(crop, by2 - by1, block["text"])
             saved_blocks.append({
                 "text":  " ".join(w["text"] for w in saved_words),
                 "bbox":  block["bbox"],
@@ -346,6 +348,7 @@ def main() -> None:
                 **({"autoBgColor": rgb_to_hex(bg)} if bg else {}),
                 # Original text fill colour; erase mode reuses it for the translation
                 **({"autoTextColor": rgb_to_hex(fg)} if fg else {}),
+                **({"autoBold": True} if bold else {}),
                 "words": [{"text": w["text"], "bbox": w["bbox"], "conf": w["conf"]} for w in saved_words],
             })
 

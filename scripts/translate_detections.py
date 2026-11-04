@@ -441,7 +441,7 @@ def translate_bucket_ai(bucket: list[dict], cache: dict) -> dict[str, str]:
 
 
 # OCR fields that must survive translation (the editor preview uses them)
-PASSTHROUGH_FIELDS = ("autoBgColor", "autoTextColor")
+PASSTHROUGH_FIELDS = ("autoBgColor", "autoTextColor", "autoBold")
 
 
 def _passthrough(block: dict) -> dict:

@@ -34,6 +34,20 @@ def language_name(code: str) -> str:
     return LANGUAGES[code][0]
 
 
+BOLD_DIR = "bold"
+# Bold Latin lives in its own font: the notofonts Indic bolds have no Latin
+BOLD_LATIN = "NotoSans-Bold.ttf"
+
+
+def bold_font_file(regular: str) -> str:
+    """assets/-relative path of the bold counterpart of a regular font file."""
+    return f"{BOLD_DIR}/{regular.replace('-Regular.ttf', '-Bold.ttf')}"
+
+
+def bold_font_files() -> list[str]:
+    return [bold_font_file(f) for f in all_font_files()] + [f"{BOLD_DIR}/{BOLD_LATIN}"]
+
+
 def all_font_files() -> list[str]:
     """Unique font files, Devanagari first (it also carries Latin glyphs)."""
     seen: list[str] = []

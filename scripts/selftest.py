@@ -38,10 +38,10 @@ from languages import LANGUAGES  # noqa: E402
 
 PY = sys.executable
 SLIDES = [
-    # (text, colour, x, y, size, start, end)
-    ("Photosynthesis", "yellow", 140, 170, 76, 0, 4),
-    ("Plants turn sunlight into food", "white", 140, 320, 46, 0, 4),
-    ("Save water every day", "white", 200, 420, 64, 4, 8),
+    # (text, colour, x, y, size, start, end, bold)
+    ("Photosynthesis", "yellow", 140, 170, 76, 0, 4, True),
+    ("Plants turn sunlight into food", "white", 140, 320, 46, 0, 4, False),
+    ("Save water every day", "white", 200, 420, 64, 4, 8, False),
 ]
 MOCK = {
     "photosynthesis": "प्रकाश संश्लेषण",
@@ -155,11 +155,12 @@ def check_providers(lang: str, use_ai: bool, mock_url: str | None) -> bool:
 
 
 def make_video(path: Path) -> None:
-    font = (HERE / "assets" / "NotoSansDevanagari-Regular.ttf").as_posix()
+    regular = (HERE / "assets" / "NotoSansDevanagari-Regular.ttf").as_posix()
+    bold = (HERE / "assets" / "bold" / "NotoSans-Bold.ttf").as_posix()
     draws = ",".join(
-        f"drawtext=fontfile={font}:expansion=none:text='{t}':fontcolor={c}:fontsize={s}:"
+        f"drawtext=fontfile={bold if b_ else regular}:expansion=none:text='{t}':fontcolor={c}:fontsize={s}:"
         f"x={x}:y={y}:enable='between(t,{a},{b - 0.04})'"
-        for t, c, x, y, s, a, b in SLIDES
+        for t, c, x, y, s, a, b, b_ in SLIDES
     )
     src = "gradients=s=1280x720:c0=0x0b3d91:c1=0xff7e5f:x0=0:y0=0:x1=1280:y1=720:speed=0.00001:r=25"
     proc = run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", f"{src},trim=duration=8",
@@ -182,9 +183,13 @@ def pipeline(out: Path, lang: str, use_ai: bool, mock_url: str | None) -> bool:
     if not check("OCR ran", proc.returncode == 0 and dets.is_file(),
                  f"{time.time() - t0:.1f}s" if proc.returncode == 0 else last_error(proc)):
         return False
-    found = {b["text"].strip().lower() for f in json.loads(dets.read_text()) for b in f["blocks"]}
+    blocks = [b for f in json.loads(dets.read_text()) for b in f["blocks"]]
+    found = {b["text"].strip().lower() for b in blocks}
     expected = {t.lower() for t, *_ in SLIDES}
     check("OCR read every line", expected <= found, f"missing: {sorted(expected - found)}" if not expected <= found else "")
+    bold_seen = {b["text"].strip().lower(): bool(b.get("autoBold")) for b in blocks}
+    wrong = [t for t, *_, b in SLIDES if bold_seen.get(t.lower()) is not None and bold_seen[t.lower()] != b]
+    check("bold title detected, body text regular", not wrong, f"wrong: {wrong}" if wrong else "")
 
     env = {"SARVAM_API_URL": mock_url} if mock_url else {}
     t0 = time.time()
@@ -209,6 +214,7 @@ def pipeline(out: Path, lang: str, use_ai: bool, mock_url: str | None) -> bool:
                  f"{time.time() - t0:.1f}s" if proc.returncode == 0 else last_error(proc)):
         return False
     modes = re.findall(r"\[\d+/\d+\]\s+(erase|box|delogo|skip)\b", proc.stdout)
+    check("render used bold for the bold title", bool(re.search(r"\] erase\s+bold '", proc.stdout)))
     check("original text erased (not boxed)", bool(modes) and all(m == "erase" for m in modes), ", ".join(modes))
     dur = float(run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(rendered)]).stdout or 0)
     check("output length matches input", abs(dur - 8.0) < 0.3, f"{dur:.2f}s")

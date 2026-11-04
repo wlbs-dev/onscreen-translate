@@ -127,6 +127,44 @@ def clean_plate(frame: np.ndarray, rect, mask: np.ndarray) -> np.ndarray:
     return out[y1 - cy1:y2 - cy1, x1 - cx1:x2 - cx1]
 
 
+# Stroke width / estimated em size above which the original counts as bold.
+# Calibrated on Noto Sans and DejaVu at 24–96px: regular ≈ 0.07–0.11,
+# bold ≈ 0.12–0.19 (see test_pipeline.Bold).
+BOLD_RATIO = 0.12
+
+
+def stroke_ratio(crop_bgr: np.ndarray, box_h: int, text: str = "") -> float | None:
+    """
+    Typical stroke thickness of the text in a crop, relative to the font's
+    em size. The em is estimated from the ink height and which letters the
+    OCR read: a line with descenders spans ~1 em, caps/ascenders only ~0.78.
+    """
+    import re
+    k = _odd(max(15, min(box_h * 1.2, 101)))
+    k = min(k, _odd(min(crop_bgr.shape[:2]) - 1)) if min(crop_bgr.shape[:2]) > 3 else 3
+    bg = cv2.medianBlur(crop_bgr, max(3, k))
+    core = (cv2.absdiff(crop_bgr, bg).max(axis=2) > TEXT_DIFF * 2).astype(np.uint8)
+    if core.sum() < 30:
+        return None
+    dt = cv2.distanceTransform(core, cv2.DIST_L2, 3)
+    # Measure against the ink's height, not the OCR box: detector boxes carry
+    # padding that varies by model (~40% taller than the ink for RapidOCR)
+    rows = np.where(core.any(axis=1))[0]
+    ink_h = max(1, int(rows.max() - rows.min() + 1)) + 6
+    if re.search(r"[gjpqy]", text):
+        em = ink_h / 1.05
+    elif re.search(r"[A-Zbdfhklt0-9]", text):
+        em = ink_h / 0.78
+    else:
+        em = ink_h / 0.6
+    return 2 * float(np.percentile(dt[core > 0], 90)) / em
+
+
+def is_bold(crop_bgr: np.ndarray, box_h: int, text: str = "") -> bool:
+    r = stroke_ratio(crop_bgr, box_h, text)
+    return r is not None and r > BOLD_RATIO
+
+
 def is_busy(plate_bgr: np.ndarray) -> bool:
     """Textured/high-contrast background where plain text would be hard to read."""
     grey = cv2.cvtColor(plate_bgr, cv2.COLOR_BGR2GRAY)

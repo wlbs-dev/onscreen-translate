@@ -206,6 +206,37 @@ class ProviderFailures(unittest.TestCase):
         self.assertEqual(td.SARVAM_STATS["failed"], 1)
 
 
+class Bold(unittest.TestCase):
+    def _crop(self, font, text, size):
+        from PIL import ImageDraw, ImageFont
+        img = Image.new("RGB", (int(size * len(text) * 0.75), size * 2), (30, 60, 140))
+        ImageDraw.Draw(img).text((10, size * 0.3), text, font=ImageFont.truetype(font, size), fill=(255, 255, 255))
+        arr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        ys = np.where((arr != (140, 60, 30)).any(axis=2))[0]
+        y1, y2 = ys.min() - 3, ys.max() + 3
+        return arr[y1:y2], y2 - y1
+
+    def test_detects_bold_vs_regular(self):
+        for text in ("Photosynthesis", "LIMITED OFFER", "Save water every day"):
+            for size in (32, 64):
+                crop, h = self._crop("assets/NotoSansDevanagari-Regular.ttf", text, size)
+                self.assertFalse(erase.is_bold(crop, h, text), f"regular {text} {size}")
+                crop, h = self._crop("assets/bold/NotoSans-Bold.ttf", text, size)
+                self.assertTrue(erase.is_bold(crop, h, text), f"bold {text} {size}")
+
+    def test_bold_runs_use_bold_fonts_with_latin(self):
+        runs = rt.script_runs("नमस्ते NEET 2026", bold=True)
+        self.assertEqual([f for f, _ in runs], ["bold/NotoSansDevanagari-Bold.ttf", "bold/NotoSans-Bold.ttf"])
+        self.assertEqual(rt.script_runs("नमस्ते NEET", bold=False),
+                         [("NotoSansDevanagari-Regular.ttf", "नमस्ते NEET")])
+
+    def test_bold_draws_heavier(self):
+        reg = rt.draw_overlay("प्रकाश संश्लेषण", 500, 80, 48, (0, 0, 0), (255, 255, 255))
+        bold = rt.draw_overlay("प्रकाश संश्लेषण", 500, 80, 48, (0, 0, 0), (255, 255, 255), bold=True)
+        ink = lambda im: int((np.asarray(im)[..., 0] > 128).sum())
+        self.assertGreater(ink(bold), ink(reg) * 1.3)
+
+
 class CacheKeys(unittest.TestCase):
     def tearDown(self):
         td.TARGET_LANG = td.DEFAULT_LANG

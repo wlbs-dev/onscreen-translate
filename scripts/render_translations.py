@@ -31,7 +31,7 @@ import numpy as np
 from dotenv import load_dotenv
 load_dotenv()
 
-from languages import all_font_files
+from languages import BOLD_DIR, BOLD_LATIN, all_font_files, bold_font_file, bold_font_files
 from colors import HEX_COLOR_RE, auto_text_rgb, border_median_rgb, hex_to_rgb
 
 def setup_logging(verbose: bool) -> None:
@@ -115,6 +115,11 @@ def correct_bbox(raw_bbox: list, y_correction: float, vid_w: int, vid_h: int) ->
 
 # ── Timeline builder ──────────────────────────────────────────────────────────
 
+def _block_bold(block: dict) -> bool:
+    b = block.get("bold")
+    return b if isinstance(b, bool) else bool(block.get("autoBold"))
+
+
 def text_key(text: str) -> str:
     """Identity of an on-screen text across frames. Mirror: Editor.tsx textKey()."""
     return re.sub(r"[\W_]+", "", text.lower())
@@ -171,6 +176,7 @@ def build_timeline(detections: list[dict], video_duration: float,
                 active[key]["text_color"] = block.get("textColor", "")
                 active[key]["auto_bg"]    = block.get("autoBgColor", "")
                 active[key]["font_size"]  = block.get("fontSize", 0)
+                active[key]["bold"]       = _block_bold(block)
                 active[key]["cover"]      = block.get("cover", "")
                 active[key]["frames"].append(
                     raw_frame_path(frame.get("frame_path", ""), frame.get("frame_index")))
@@ -190,6 +196,8 @@ def build_timeline(detections: list[dict], video_duration: float,
                     "text_color":    block.get("textColor", ""),
                     "auto_bg":       block.get("autoBgColor", ""),
                     "font_size":     block.get("fontSize", 0),
+                    # Explicit editor choice, else what OCR measured
+                    "bold":          _block_bold(block),
                     "cover":         block.get("cover", ""),
                     # Raw frames this text is visible in (for erasing)
                     "frames":        [raw_frame_path(frame.get("frame_path", ""),
@@ -257,22 +265,42 @@ def font_file_for(ch: str) -> str | None:
     return None
 
 
-def script_runs(text: str) -> list[tuple[str, str]]:
-    """Split text into (font_file, run_text) pieces."""
-    runs: list[list] = []
+LATIN = "latin"  # script-neutral characters: Latin letters, digits, punctuation
+
+
+def script_runs(text: str, bold: bool = False) -> list[tuple[str, str]]:
+    """
+    Split text into (assets-relative font file, run_text) pieces.
+
+    Regular: Latin uses the Devanagari font (it includes Latin), so mixed
+    Hindi/English stays one run and shapes together. Bold: the Indic bold
+    fonts have no Latin, so Latin runs use Noto Sans Bold.
+    """
+    keyed: list[list] = []
     for ch in text:
-        font = font_file_for(ch)
-        if font is None:
+        key = font_file_for(ch)
+        if key is None:
             # Spaces/marks/joiners stay with the current run; other neutral
-            # characters (Latin, digits, punctuation) go to the base font
-            if runs and (ch.isspace() or ord(ch) in STICKY or not ch.isprintable()):
-                runs[-1][1] += ch
+            # characters (Latin, digits, punctuation) are Latin
+            if keyed and (ch.isspace() or ord(ch) in STICKY or not ch.isprintable()):
+                keyed[-1][1] += ch
                 continue
-            font = BASE_FONT
-        if runs and runs[-1][0] == font:
-            runs[-1][1] += ch
+            key = LATIN
+        if keyed and keyed[-1][0] == key:
+            keyed[-1][1] += ch
         else:
-            runs.append([font, ch])
+            keyed.append([key, ch])
+
+    runs: list[list] = []
+    for key, run in keyed:
+        if bold:
+            font = f"{BOLD_DIR}/{BOLD_LATIN}" if key == LATIN else bold_font_file(key)
+        else:
+            font = BASE_FONT if key == LATIN else key
+        if runs and runs[-1][0] == font:
+            runs[-1][1] += run
+        else:
+            runs.append([font, run])
     return [(f, t) for f, t in runs]
 
 
@@ -298,15 +326,15 @@ def check_text_shaping() -> None:
             "would be shaped incorrectly. Install Pillow from the PyPI wheel "
             "(pip install --force-reinstall pillow), which includes it."
         )
-    missing = [f for f in all_font_files() if not Path(FONT_DIR, f).is_file()]
+    missing = [f for f in all_font_files() + bold_font_files() if not Path(FONT_DIR, f).is_file()]
     if missing:
         sys.exit(f"[ERROR] Missing fonts in {FONT_DIR}/: {', '.join(missing)}")
 
 
-def measure_text(text: str, size: int) -> tuple[float, int, int]:
+def measure_text(text: str, size: int, bold: bool = False) -> tuple[float, int, int]:
     """(advance width, max ascent, max descent) across the text's runs."""
     width, asc, desc = 0.0, 0, 0
-    for font_file, run in script_runs(text):
+    for font_file, run in script_runs(text, bold):
         font = load_font(font_file, size)
         width += font.getlength(run)
         a, d = font.getmetrics()
@@ -315,15 +343,15 @@ def measure_text(text: str, size: int) -> tuple[float, int, int]:
 
 
 def draw_text(img, text: str, x: float, center_y: float, font_size: int,
-              color, stroke: int = 0, stroke_color=None) -> None:
+              color, stroke: int = 0, stroke_color=None, bold: bool = False) -> None:
     """Draw text left-aligned at x, vertically centred on center_y, run by run."""
     from PIL import ImageDraw
     if not text.strip():
         return
     draw = ImageDraw.Draw(img)
-    _, asc, desc = measure_text(text, font_size)
+    _, asc, desc = measure_text(text, font_size, bold)
     baseline = center_y - (asc + desc) / 2 + asc
-    for font_file, run in script_runs(text):
+    for font_file, run in script_runs(text, bold):
         font = load_font(font_file, font_size)
         draw.text((x, baseline), run, font=font, fill=color, anchor="ls",
                   stroke_width=stroke, stroke_fill=stroke_color)
@@ -331,11 +359,11 @@ def draw_text(img, text: str, x: float, center_y: float, font_size: int,
 
 
 def draw_overlay(text: str, width: int, height: int, font_size: int,
-                 bg_rgb: tuple[int, int, int], text_color: tuple[int, int, int]):
+                 bg_rgb: tuple[int, int, int], text_color: tuple[int, int, int], bold: bool = False):
     """Opaque cover patch with the text left-aligned and vertically centred."""
     from PIL import Image
     img = Image.new("RGB", (width, height), bg_rgb)
-    draw_text(img, text, TEXT_PAD_X, height / 2, font_size, text_color)
+    draw_text(img, text, TEXT_PAD_X, height / 2, font_size, text_color, bold=bold)
     return img
 
 
@@ -417,6 +445,7 @@ def _cover_style(event: dict) -> str:
 
 def _box_overlay(event, rect, text, font_size, png) -> dict:
     x1, y1, x2, y2 = rect
+    bold = event.get("bold", False)
     bw, bh = x2 - x1, y2 - y1
     r, g, b = sample_bg_color(event.get("frame_path", ""), [x1, y1, x2, y2],
                               event.get("bg_color", ""), event.get("auto_bg", ""))
@@ -424,9 +453,9 @@ def _box_overlay(event, rect, text, font_size, png) -> dict:
     text_rgb = hex_to_rgb(saved) if HEX_COLOR_RE.match(saved or "") else auto_text_rgb((r, g, b))
     width = bw
     if text.strip():
-        natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK
+        natural_w = int(measure_text(text, font_size, bold)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK
         width = min(max(bw, natural_w), event["_vid_w"] - x1)
-    draw_overlay(text, width, bh, font_size, (r, g, b), text_rgb).save(png)
+    draw_overlay(text, width, bh, font_size, (r, g, b), text_rgb, bold).save(png)
     return {"png": png, "x": x1, "y": y1, "w": width, "h": bh, "mode": "box"}
 
 
@@ -449,7 +478,8 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
     # Region: the original box plus a margin (anti-aliasing, outlines,
     # shadows), widened to fit the translation if it is longer
     m = max(4, round(bh * 0.15))
-    natural_w = int(measure_text(text, font_size)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK if text.strip() else 0
+    bold = event.get("bold", False)
+    natural_w = int(measure_text(text, font_size, bold)[0]) + 2 * TEXT_PAD_X + PATCH_SLACK if text.strip() else 0
     rx1, ry1 = max(0, x1 - m), max(0, y1 - m)
     rx2 = min(vid_w, max(x2 + m, x1 + natural_w))
     ry2 = min(vid_h, y2 + m)
@@ -479,7 +509,7 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
         # like the outlined captions they usually replace
         stroke = max(1, font_size // 18) if erase.is_busy(plate) else 0
         draw_text(img, text, text_x, center_y, font_size, text_rgb,
-                  stroke=stroke, stroke_color=auto_text_rgb(text_rgb))
+                  stroke=stroke, stroke_color=auto_text_rgb(text_rgb), bold=bold)
         img.save(png)
         return {"png": png, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1, "mode": "erase"}
 
@@ -490,7 +520,7 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
     outline = auto_text_rgb(text_rgb)
     img = Image.new("RGBA", (rx2 - rx1, ry2 - ry1), (0, 0, 0, 0))
     draw_text(img, text, text_x, center_y, font_size, text_rgb + (255,),
-              stroke=max(1, font_size // 18), stroke_color=outline + (255,))
+              stroke=max(1, font_size // 18), stroke_color=outline + (255,), bold=bold)
     img.save(png)
     # delogo needs the rectangle strictly inside the frame
     dx1, dy1 = max(1, x1 - m), max(1, y1 - m)
@@ -534,7 +564,7 @@ def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> 
         ov.update(start=event["start_time"], end=event["end_time"])
         overlays.append(ov)
         label = f"'{text[:30]}'" if text.strip() else "(no text)"
-        logger.info(f"  [{i+1}/{len(events)}] {ov['mode']:6} {label} at ({ov['x']},{ov['y']}) "
+        logger.info(f"  [{i+1}/{len(events)}] {ov['mode']:6} {'bold ' if event.get('bold') else ''}{label} at ({ov['x']},{ov['y']}) "
                     f"{ov['w']}x{ov['h']} {event['start_time']:.2f}s → {event['end_time']:.2f}s")
     return overlays
 
