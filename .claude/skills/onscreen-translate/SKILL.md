@@ -95,7 +95,9 @@ python scripts/render_translations.py --input video.mp4 --detections out/transla
 - Never load the OCR model only inside a `Pool` initializer: if it fails there the pool respawns workers forever. `ocr_annotate.py` loads it once in the parent first.
 - Adding a language: update `scripts/languages.py`, `loomv2/lib/languages.ts`, and (for a new script) add the font to `scripts/assets/` and `loomv2/lib/editor/indicFonts.ts`.
 - Overlay identity across frames is `text_key()` (letters/digits only) in the renderer and translator, mirrored by `textKey()` in `Editor.tsx`. Change them together.
-- Detections JSON block fields the editor may write: `bgColor`, `textColor`, `fontSize`, `cover` (`erase`|`box`) — all optional, empty = auto. `autoBgColor`/`autoTextColor` come from OCR and must be passed through (`PASSTHROUGH_FIELDS` in translate, `eventsToFrames` in the editor).
+- Detections JSON block fields the editor may write: `bgColor`, `textColor`, `fontSize`, `cover` (`erase`|`box`), `bold` — all optional, empty = auto. `autoBgColor`/`autoTextColor`/`autoBold` come from OCR and must be passed through (`PASSTHROUGH_FIELDS` in translate, `eventsToFrames` in the editor).
+- Bold: `erase.is_bold()` compares stroke width (distance transform) to the ink height. Indic bold fonts live in `scripts/assets/bold/` and have no Latin, so bold Latin runs use `bold/NotoSans-Bold.ttf` (`script_runs(text, bold=True)`); the editor mirrors this with an `OTLatin` 700-weight face in `lib/editor/indicFonts.ts`.
+- `scripts/selftest.py` (`--mock` offline) is the end-to-end check; run it after pipeline changes.
 - `render_translations.py`: validate colors from the editable JSON with `HEX_COLOR_RE`. Pillow has no font fallback — new scripts need a range in `SCRIPT_RANGES`. Keep text padding (`TEXT_PAD_X`, `PATCH_SLACK`) in sync with `OverlayCanvas.tsx`.
 - Never commit videos, `.env`, or `scripts/cache/` (all gitignored). The repo is public.
 - `loomv2/AGENTS.md`: this Next.js version has breaking changes. Check `node_modules/next/dist/docs/` before using Next APIs.

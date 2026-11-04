@@ -139,11 +139,10 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 
 ## Roadmap
 
-**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads
+**Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads · bold text matched automatically · admin-issued password reset links · `selftest.py`
 
 **OCR + Translation**
 - Erasing on busy textures and moving backgrounds is the weakest case (inpainting smears, delogo blurs) — a learned inpainting model (e.g. LaMa via ONNX) would fix most of it
-- Match the original font weight (bold titles currently render regular)
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Translate into several languages from one OCR pass
 
