@@ -14,7 +14,7 @@ Video → OCR → Translation → Render → Output video
 
 1. **OCR** — converts the upload to browser-playable H.264 MP4 if needed (MOV, MKV, WebM, HEVC, ProRes, 10-bit…), then extracts text blocks with bounding boxes, confidence and the original text colour (frames identical to the previous one are skipped)
 2. **Translation** — translates each on-screen block into the chosen language via Sarvam AI (or OpenAI-assisted, which translates whole sentences split across boxes)
-3. **Render** — **erases the original text** and rebuilds the background behind it, then draws the translation in the original colour at the same position and time. Static backgrounds get an inpainted clean plate; moving ones are erased frame by frame. A flat colour box is available per text as an alternative
+3. **Render** — **erases the original text** and rebuilds the background behind it, then draws the translation in the original colour (and weight) at the same position and time. Static scenes reuse the real background from frames where the text isn't on screen yet (or anymore), falling back to inpainting; moving backgrounds are inpainted frame by frame along the text strokes only. A flat colour box is available per text as an alternative
 4. **Editor UI** — a Next.js dashboard to review jobs, edit overlay text/timing/style, and retranslate
 
 ---
@@ -142,7 +142,7 @@ python render_translations.py --input path/to/video.mp4 --detections annotated/t
 **Done:** 10 target languages with a picker · duplicate-frame skipping in OCR · undo/redo · keyboard shortcuts · clip snapping · multi-select · auto font size · render queue · restart recovery · job retention (`JOB_RETENTION_DAYS`) · RapidOCR + single-pass ffmpeg render (no browser, ~5x faster renders) · real text erasing with original text colour · per-block standard translation · automatic conversion of MOV/MKV/WebM/HEVC uploads · bold text matched automatically · admin-issued password reset links · `selftest.py`
 
 **OCR + Translation**
-- Erasing on busy textures and moving backgrounds is the weakest case (inpainting smears, delogo blurs) — a learned inpainting model (e.g. LaMa via ONNX) would fix most of it
+- Erasing: static scenes reuse the real background from frames before/after the text when it animates in/out, otherwise inpaint; moving backgrounds are inpainted frame by frame along the text strokes. Text that stays on a busy *static* texture for the whole video still smudges a little — a learned inpainting model (e.g. LaMa via ONNX) is the next step there
 - Cache invalidation UI — right now you have to manually delete the cache file
 - Translate into several languages from one OCR pass
 

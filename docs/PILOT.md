@@ -116,7 +116,7 @@ If someone forgets their password: **Admin → Users → Reset link**, and send 
 
 Press **?** in the editor for keyboard shortcuts (space to play, Ctrl+Z to undo, Alt+arrows to nudge timing).
 
-**Known limitations right now:** erasing over busy photos or moving footage can leave a soft smudge; handwritten or heavily stylised text may not be detected; one shared font family (Noto Sans) is used for every language.
+**Known limitations right now:** text that stays on screen for the whole video over a busy photo or texture can leave a soft smudge when erased (try *Cover with box* there); handwritten or heavily stylised text may not be detected; one shared font family (Noto Sans) is used for every language.
 
 ---
 
