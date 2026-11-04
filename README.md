@@ -270,6 +270,17 @@ It's a single-process app: the job queue, rate limits and JSON stores assume one
 
 ## Tests
 
+**Check a real setup end to end** (your keys, the real providers, a generated demo video, OCR → translate → erase render):
+
+```bash
+cd scripts && .venv/bin/python selftest.py            # add --lang ta-IN, --ai to test OpenAI mode
+.venv/bin/python selftest.py --mock                    # offline: built-in fake Sarvam, no key needed
+```
+
+It prints a pass/fail line per step and leaves `workspace/selftest/output.mp4` and `before_after.png` to look at. If Sarvam rejects the key or can't be reached, translation jobs now fail with that reason instead of finishing with English text.
+
+**Unit tests and type checks:**
+
 ```bash
 cd scripts && .venv/bin/python -m unittest test_pipeline -v   # script splitting, shaping, dedupe, cache keys
 cd loomv2 && npx tsc --noEmit && npm run lint
