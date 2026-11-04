@@ -148,6 +148,52 @@ class Erase(unittest.TestCase):
         self.assertEqual(base, 1)
 
 
+class BetterErase(unittest.TestCase):
+    def test_clean_background_from_neighbouring_frames(self):
+        rng = np.random.default_rng(0)
+        texture = rng.integers(0, 255, (60, 200, 3), dtype=np.uint8)   # busy, static
+        with_text = texture.copy()
+        cv2.putText(with_text, "Hello", (10, 45), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
+        mask = cv2.dilate((np.abs(with_text.astype(int) - texture.astype(int)).max(axis=2) > 0).astype(np.uint8) * 255,
+                          np.ones((3, 3), np.uint8))
+        clean = erase.find_clean_background(with_text, mask, [[texture, texture.copy()]])
+        self.assertIsNotNone(clean)
+        plate = erase.blend_clean(with_text, clean, mask)
+        self.assertLess(np.abs(plate.astype(int) - texture.astype(int)).mean(), 2)
+        # Text still present in the neighbours → no clean background
+        self.assertIsNone(erase.find_clean_background(with_text, mask, [[with_text.copy(), with_text.copy()]]))
+
+    def test_text_colour_on_busy_texture(self):
+        rng = np.random.default_rng(1)
+        # Busy mid-tone texture with sparse high-contrast specks, like footage
+        img = rng.integers(50, 150, (80, 300, 1)).repeat(3, axis=2).astype(np.uint8)
+        specks = rng.random((80, 300)) < 0.08
+        img[specks] = rng.choice([0, 255], size=(int(specks.sum()), 1))
+        cv2.putText(img, "News", (20, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.8, (0, 255, 255), 6)
+        r, g, b = erase.text_color(img, 80)
+        self.assertGreater(min(r, g), 180)
+        self.assertLess(b, 90)
+
+    def test_inpaint_clip_odd_width_is_not_sheared(self):
+        import subprocess, tempfile
+        d = tempfile.mkdtemp()
+        src = os.path.join(d, "in.mp4")
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=s=160x96:r=10:d=1",
+                        "-pix_fmt", "yuv420p", src], check=True)
+        region = (11, 13, 11 + 33, 13 + 21)               # odd offset and width
+        mask = np.zeros((21, 33), np.uint8)                 # nothing to inpaint
+        text = np.zeros((21, 33, 4), np.uint8)              # fully transparent text
+        out = os.path.join(d, "clip.mkv")
+        self.assertTrue(rt._inpaint_clip(src, region, mask, text, 0.0, 1.0, 10.0, out))
+        ref = subprocess.run(["ffmpeg", "-v", "error", "-i", src, "-vf", "format=bgr24", "-frames:v", "1",
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        got = subprocess.run(["ffmpeg", "-v", "error", "-i", out, "-frames:v", "1", "-pix_fmt", "bgr24",
+                              "-f", "rawvideo", "-"], capture_output=True).stdout
+        ref = np.frombuffer(ref, np.uint8).reshape(96, 160, 3)[13:34, 11:44]
+        got = np.frombuffer(got, np.uint8).reshape(21, 33, 3)
+        self.assertLess(np.abs(ref.astype(int) - got.astype(int)).mean(), 1.0)
+
+
 class TextKeys(unittest.TestCase):
     def test_ocr_spacing_variants_match(self):
         self.assertEqual(rt.text_key("Limitedoffer 50% off"), rt.text_key("Limited offer 50% off"))

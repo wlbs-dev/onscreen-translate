@@ -459,6 +459,73 @@ def _box_overlay(event, rect, text, font_size, png) -> dict:
     return {"png": png, "x": x1, "y": y1, "w": width, "h": bh, "mode": "box"}
 
 
+NEIGHBOUR_FRAMES = 8   # raw frames (2 fps) searched on each side for a clean background
+
+
+def _neighbour_crops(span_paths: list[str], region, vid_w: int, vid_h: int) -> list[list]:
+    """Crops of the raw frames just before and just after the span, nearest first."""
+    import cv2
+    import erase
+    folder = Path(span_paths[0]).parent
+    all_frames = sorted(str(p) for p in folder.glob("*.jpg"))
+    try:
+        first, last = all_frames.index(span_paths[0]), all_frames.index(span_paths[-1])
+    except ValueError:
+        return []
+    before = all_frames[max(0, first - NEIGHBOUR_FRAMES):first][::-1]
+    after = all_frames[last + 1:last + 1 + NEIGHBOUR_FRAMES]
+
+    def load(p):
+        img = cv2.imread(p)
+        return erase.crop(img, region) if img is not None and img.shape[:2] == (vid_h, vid_w) else None
+    return [[load(p) for p in before], [load(p) for p in after]]
+
+
+def _inpaint_clip(input_path: str, region, mask, text_rgba, start: float, end: float,
+                  fps: float, out_path: str) -> bool:
+    """
+    Moving background: decode just this region for the event's time span,
+    inpaint the text strokes in every frame, composite the translated text,
+    and write a lossless clip that ffmpeg overlays back in place.
+    """
+    import cv2
+    x1, y1, x2, y2 = region
+    w, h = x2 - x1, y2 - y1
+    dur = max(0.04, end - start)
+    dec = subprocess.Popen(
+        ["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", input_path,
+         # Convert before cropping: cropping 4:2:0 video silently rounds odd
+         # widths/offsets to even, which would shear every frame we read
+         "-vf", f"format=bgr24,crop={w}:{h}:{x1}:{y1}", "-f", "rawvideo", "-pix_fmt", "bgr24", "-"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    enc = subprocess.Popen(
+        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
+         "-r", f"{fps:.6f}", "-i", "-", "-c:v", "ffv1", "-pix_fmt", "bgr0", out_path],
+        stdin=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    alpha = (text_rgba[..., 3:4].astype(np.float32) / 255.0)
+    text_bgr = text_rgba[..., 2::-1].astype(np.float32)
+    # Small radius: strokes are thin, and this runs on every frame
+    # (radius 3 ≈ 50 ms for a 700×100 region vs ~200 ms at 7)
+    radius = 3
+    size, frames = w * h * 3, 0
+    try:
+        while True:
+            buf = dec.stdout.read(size)
+            if len(buf) < size:
+                break
+            frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
+            clean = cv2.inpaint(frame, mask, radius, cv2.INPAINT_TELEA)
+            out = clean.astype(np.float32) * (1 - alpha) + text_bgr * alpha
+            enc.stdin.write(out.astype(np.uint8).tobytes())
+            frames += 1
+    finally:
+        enc.stdin.close()
+        dec.stdout.close()
+        dec.wait()
+        enc.wait()
+    return frames > 0 and enc.returncode == 0 and os.path.isfile(out_path)
+
+
 def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | None:
     """Erase the original text; None if no frames could be read (caller boxes)."""
     import cv2
@@ -485,8 +552,11 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
     ry2 = min(vid_h, y2 + m)
     region = (rx1, ry1, rx2, ry2)
 
+    # The original text's fill colour (from the last, fullest frame) guides
+    # the mask on busy textures and is reused for the translation
+    orig_fill = erase.text_color(erase.crop(frames[-1], (x1, y1, x2, y2)), bh)
     mask, moving, base = erase.analyse_span(
-        frames, region, bh, core=(x1 - rx1, y1 - ry1, x2 - rx1, y2 - ry1))
+        frames, region, bh, core=(x1 - rx1, y1 - ry1, x2 - rx1, y2 - ry1), fill=orig_fill)
     base_frame = frames[base]
     base_crop = erase.crop(base_frame, region)
 
@@ -494,13 +564,21 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
     if HEX_COLOR_RE.match(saved or ""):
         text_rgb = hex_to_rgb(saved)
     else:
-        text_rgb = erase.text_color(erase.crop(base_frame, (x1, y1, x2, y2)), bh)
+        text_rgb = erase.text_color(erase.crop(base_frame, (x1, y1, x2, y2)), bh) or orig_fill
 
     text_x = x1 - rx1 + TEXT_PAD_X
     center_y = (y1 + y2) / 2 - ry1
 
     if not moving:
-        plate = erase.clean_plate(base_frame, region, mask)
+        # Best case: the same scene without the text, from just before or
+        # after it is on screen — real pixels instead of inpainted ones
+        clean = erase.find_clean_background(base_crop, mask, _neighbour_crops(paths, region, vid_w, vid_h))
+        if clean is not None:
+            plate, how = erase.blend_clean(base_crop, clean, mask), "erase"
+            event["_erase_how"] = "clean background"
+        else:
+            plate, how = erase.clean_plate(base_frame, region, mask), "erase"
+            event["_erase_how"] = "inpainted"
         img = Image.fromarray(cv2.cvtColor(plate, cv2.COLOR_BGR2RGB))
         if text_rgb is None:
             med = np.median(plate.reshape(-1, 3), axis=0)
@@ -511,10 +589,10 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
         draw_text(img, text, text_x, center_y, font_size, text_rgb,
                   stroke=stroke, stroke_color=auto_text_rgb(text_rgb), bold=bold)
         img.save(png)
-        return {"png": png, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1, "mode": "erase"}
+        return {"png": png, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1, "mode": how}
 
-    # Moving background: erase per frame with delogo over the original text
-    # and lay transparent text on top, outlined so it reads on anything
+    # Moving background: inpaint the text strokes frame by frame (falling
+    # back to ffmpeg delogo) and lay outlined text on top
     if text_rgb is None:
         text_rgb = (255, 255, 255)
     outline = auto_text_rgb(text_rgb)
@@ -522,6 +600,19 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
     draw_text(img, text, text_x, center_y, font_size, text_rgb + (255,),
               stroke=max(1, font_size // 18), stroke_color=outline + (255,), bold=bold)
     img.save(png)
+    input_path = event.get("_input")
+    if input_path:
+        clip = os.path.splitext(png)[0] + ".mkv"
+        stable = erase.stable_text_mask(frames, region, bh, fill=orig_fill)
+        try:
+            if stable.any() and _inpaint_clip(input_path, region, stable, np.asarray(img), event["start_time"],
+                                              event["end_time"], event.get("_fps", 25.0), clip):
+                event["_erase_how"] = "per-frame inpaint"
+                return {"png": png, "clip": clip, "x": rx1, "y": ry1, "w": rx2 - rx1, "h": ry2 - ry1,
+                        "mode": "moving"}
+        except Exception as e:
+            logger.warning(f"  per-frame inpaint failed ({e}); falling back to delogo")
+    event["_erase_how"] = "delogo"
     # delogo needs the rectangle strictly inside the frame
     dx1, dy1 = max(1, x1 - m), max(1, y1 - m)
     dx2, dy2 = min(vid_w - 2, x2 + m), min(vid_h - 2, y2 + m)
@@ -529,8 +620,9 @@ def _erase_overlay(event, rect, text, font_size, png, vid_w, vid_h) -> dict | No
             "delogo": (dx1, dy1, max(1, dx2 - dx1), max(1, dy2 - dy1))}
 
 
-def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> list[dict]:
-    """Draw one PNG per event; return [{png, x, y, start, end, mode, delogo?}]."""
+def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str,
+                   input_path: str | None = None, fps: float = 25.0) -> list[dict]:
+    """Draw one PNG (or clip) per event; return [{png, clip?, x, y, start, end, mode, delogo?}]."""
     overlays = []
     for i, event in enumerate(events):
         x1, y1, x2, y2 = event["bbox_px"]
@@ -551,6 +643,7 @@ def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> 
             continue
         png = os.path.join(out_dir, f"overlay_{i:04d}.png")
         event["_vid_w"] = vid_w
+        event["_input"], event["_fps"] = input_path, fps
 
         ov = None
         if _cover_style(event) == "erase":
@@ -564,7 +657,8 @@ def build_overlays(events: list[dict], vid_w: int, vid_h: int, out_dir: str) -> 
         ov.update(start=event["start_time"], end=event["end_time"])
         overlays.append(ov)
         label = f"'{text[:30]}'" if text.strip() else "(no text)"
-        logger.info(f"  [{i+1}/{len(events)}] {ov['mode']:6} {'bold ' if event.get('bold') else ''}{label} at ({ov['x']},{ov['y']}) "
+        how = f" [{event['_erase_how']}]" if event.get("_erase_how") else ""
+        logger.info(f"  [{i+1}/{len(events)}] {ov['mode']:6} {'bold ' if event.get('bold') else ''}{label}{how} at ({ov['x']},{ov['y']}) "
                     f"{ov['w']}x{ov['h']} {event['start_time']:.2f}s → {event['end_time']:.2f}s")
     return overlays
 
@@ -582,7 +676,7 @@ def render_video(input_path: str, output_path: str, events: list[dict], meta: di
 
     with tempfile.TemporaryDirectory(prefix="overlays_") as tmp:
         logger.info(f"Drawing {len(events)} overlays...")
-        overlays = build_overlays(events, vid_w, vid_h, tmp)
+        overlays = build_overlays(events, vid_w, vid_h, tmp, input_path, meta["fps"])
 
         # One timed overlay filter per event, chained. Still images repeat
         # their single frame (eof_action=repeat), so enable= alone decides
@@ -599,7 +693,10 @@ def render_video(input_path: str, output_path: str, events: list[dict], meta: di
                 prev = f"d{n}"
             out = f"v{n}"
             chain.append(
-                f"[{prev}][{n}:v]overlay=x={ov['x']}:y={ov['y']}:format=yuv444:{enable}[{out}]"
+                f"[{prev}][{n}:v]overlay=x={ov['x']}:y={ov['y']}:format=yuv444:"
+                # A clip ends with its event; after that, pass the video through
+                + ("eof_action=pass:" if ov.get("clip") else "")
+                + f"{enable}[{out}]"
             )
             prev = out
         chain.append(f"[{prev}]format=yuv420p[vout]")
@@ -611,7 +708,11 @@ def render_video(input_path: str, output_path: str, events: list[dict], meta: di
         cmd = ["ffmpeg", "-y", "-v", "error", "-nostats", "-progress", "pipe:1",
                "-i", input_path]
         for ov in overlays:
-            cmd += ["-i", ov["png"]]
+            if ov.get("clip"):
+                # Per-frame erased clip, shifted to start at the event
+                cmd += ["-itsoffset", f"{ov['start']:.3f}", "-i", ov["clip"]]
+            else:
+                cmd += ["-i", ov["png"]]
         cmd += graph_flag + [
             "-map", "[vout]", "-map", "0:a?",
             "-c:v", "libx264", "-crf", "18", "-preset", "fast",

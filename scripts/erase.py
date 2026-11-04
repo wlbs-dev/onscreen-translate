@@ -11,9 +11,14 @@ letter is still fully covered.
     frame into a "clean plate"; the translated text is drawn on top and the
     whole patch is overlaid by ffmpeg. Unmasked pixels are the original
     frame, so patch edges are invisible.
-  * Moving background → a frozen plate would stop the motion, so the caller
-    falls back to ffmpeg's per-frame delogo erase plus a transparent text
-    layer (see render_translations.py).
+    Before inpainting, look for a *clean background* in frames just before
+    or after the text is on screen (titles that animate in/out): if the same
+    scene is visible there without the text, its real pixels are copied in,
+    which beats any inpainting on textures and photos.
+  * Moving background → a frozen plate would stop the motion, so the region
+    is inpainted frame by frame using only the text strokes (pixels that are
+    text in most sampled frames), and composited back as a short clip
+    (render_translations.py). ffmpeg delogo is the last-resort fallback.
 """
 from __future__ import annotations
 
@@ -66,12 +71,31 @@ def text_color(crop_bgr: np.ndarray, box_h: int) -> tuple[int, int, int] | None:
     px = crop_bgr[core]
     if len(px) < 30:
         return None
-    # Quantise and take the most common bin, then the mean within it
-    q = (px // 32).astype(np.int32)
-    keys = q[:, 0] * 64 + q[:, 1] * 8 + q[:, 2]
-    top = np.bincount(keys).argmax()
+    # Quantise; the fill is the most common bin among strong text pixels
+    # that is NOT common in the crop's border rows/columns (background).
+    # On a busy texture the texture's own colours win the raw count.
+    keyf = lambda a: (a // 32).astype(np.int32) @ np.array([64, 8, 1])
+    keys = keyf(px)
+    border = np.concatenate([crop_bgr[:2].reshape(-1, 3), crop_bgr[-2:].reshape(-1, 3),
+                             crop_bgr[:, :2].reshape(-1, 3), crop_bgr[:, -2:].reshape(-1, 3)])
+    bg_counts = np.bincount(keyf(border), minlength=512) / max(1, len(border))
+    counts = np.bincount(keys, minlength=512).astype(float)
+    counts[bg_counts > 0.02] *= 0.05
+    top = int(counts.argmax())
     sel = px[keys == top].mean(axis=0)
     return int(sel[2]), int(sel[1]), int(sel[0])
+
+
+def colour_mask(crop_bgr: np.ndarray, fill_rgb, box_h: int) -> np.ndarray:
+    """Pixels near the text's fill colour, grown to cover outlines/shadows."""
+    near = np.abs(crop_bgr.astype(np.int16) - np.array(fill_rgb[::-1], np.int16)).max(axis=2) < 60
+    grow = max(3, round(box_h * 0.1))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * grow + 1, 2 * grow + 1))
+    return cv2.dilate(near.astype(np.uint8) * 255, k)
+
+
+# Above this fraction of the crop, the shape mask is useless (busy texture)
+MASK_SATURATED = 0.6
 
 
 def crop(img: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
@@ -79,14 +103,18 @@ def crop(img: np.ndarray, rect: tuple[int, int, int, int]) -> np.ndarray:
     return img[y1:y2, x1:x2]
 
 
-def analyse_span(frames: list[np.ndarray], rect, box_h: int, core=None):
+def analyse_span(frames: list[np.ndarray], rect, box_h: int, core=None, fill=None):
     """
     Union text mask over sampled frames and whether the background moves.
     `core` is the OCR text box within the crop (x1, y1, x2, y2); defaults to
-    the whole crop. Returns (mask, moving, base_frame_index).
+    the whole crop. `fill` (RGB) is the text colour if known: on busy
+    textures, where the shape mask covers everything, the mask comes from
+    the colour instead. Returns (mask, moving, base_frame_index).
     """
     crops = [crop(f, rect) for f in frames]
     masks = [text_mask(c, box_h) for c in crops]
+    if fill is not None and np.mean([(m > 0).mean() for m in masks]) > MASK_SATURATED:
+        masks = [colour_mask(c, fill, box_h) for c in crops]
     union = np.maximum.reduce(masks)
     cx1, cy1, cx2, cy2 = core or (0, 0, crops[0].shape[1], crops[0].shape[0])
     # The plate comes from the frame with the most text visible inside the
@@ -98,6 +126,14 @@ def analyse_span(frames: list[np.ndarray], rect, box_h: int, core=None):
     # (a moving line, a person) shows up as change. Excluding the union mask
     # instead would hide moving objects, since they look text-like too.
     keep = masks[base] == 0
+    if keep.mean() < 0.15 and len(masks) > 1:
+        # Busy texture: nearly everything looks text-like in a single frame.
+        # Compare outside the pixels that are text in most frames instead,
+        # and if even that is empty, over the whole region.
+        votes = np.sum([m > 0 for m in masks], axis=0)
+        keep = votes * 2 < len(masks)
+        if keep.mean() < 0.05:
+            keep = np.ones_like(keep)
     moving = False
     if keep.sum() > 50 and len(crops) > 1:
         ref = crops[base].astype(np.int16)
@@ -146,6 +182,15 @@ def stroke_ratio(crop_bgr: np.ndarray, box_h: int, text: str = "") -> float | No
     core = (cv2.absdiff(crop_bgr, bg).max(axis=2) > TEXT_DIFF * 2).astype(np.uint8)
     if core.sum() < 30:
         return None
+    # Only the glyph fill: an outline or shadow in another colour would
+    # otherwise make outlined captions look bold
+    fill = text_color(crop_bgr, box_h)
+    if fill is not None:
+        near = np.abs(crop_bgr.astype(np.int16) - np.array(fill[::-1], np.int16)).max(axis=2) < 70
+        fill_px = int((core & near).sum())
+        # Outlined/shadowed text: many strong pixels far from the fill colour
+        if fill_px >= 30 and fill_px < 0.7 * int(core.sum()):
+            core = (core & near).astype(np.uint8)
     dt = cv2.distanceTransform(core, cv2.DIST_L2, 3)
     # Measure against the ink's height, not the OCR box: detector boxes carry
     # padding that varies by model (~40% taller than the ink for RapidOCR)
@@ -169,6 +214,63 @@ def is_busy(plate_bgr: np.ndarray) -> bool:
     """Textured/high-contrast background where plain text would be hard to read."""
     grey = cv2.cvtColor(plate_bgr, cv2.COLOR_BGR2GRAY)
     return float(grey.std()) > BUSY_STD
+
+
+def stable_text_mask(frames: list[np.ndarray], rect, box_h: int, fill=None) -> np.ndarray:
+    """
+    Pixels that are text in at least half of the sampled frames. Over a moving
+    background the static caption survives the vote, while moving objects
+    (which also look text-like in single frames) do not. On saturated busy
+    textures the colour mask is used instead (see analyse_span).
+    """
+    masks = [(text_mask(crop(f, rect), box_h) > 0) for f in frames]
+    if fill is not None and np.mean([m.mean() for m in masks]) > MASK_SATURATED:
+        masks = [(colour_mask(crop(f, rect), fill, box_h) > 0) for f in frames]
+    votes = np.sum(masks, axis=0)
+    return ((votes * 2 >= len(masks)).astype(np.uint8)) * 255
+
+
+def _region_changed(a: np.ndarray, b: np.ndarray, where: np.ndarray) -> float:
+    """Fraction of `where` pixels that differ noticeably between two crops."""
+    if not where.any():
+        return 0.0
+    diff = np.abs(a.astype(np.int16) - b.astype(np.int16)).max(axis=2) > MOTION_PIXEL
+    return float(diff[where].mean())
+
+
+def find_clean_background(base_crop: np.ndarray, mask: np.ndarray,
+                          sides: list[list[np.ndarray]]) -> np.ndarray | None:
+    """
+    Search frames from before/after the text's span (each side nearest
+    first) for the same scene with the text area empty. A candidate counts
+    when: its non-text pixels match the base (same static scene), the text
+    area differs from the base (the text is gone), and the next frame out
+    shows the same text area (stable background, not a half-typed title).
+    Returns the clean crop or None.
+    """
+    m = mask > 0
+    keep = ~m
+    if m.sum() < 20:
+        return None
+    for frames in sides:
+        crops = [c for c in frames if c is not None and c.shape == base_crop.shape]
+        for i in range(len(crops) - 1):
+            c, further = crops[i], crops[i + 1]
+            if _region_changed(c, base_crop, keep) > MOTION_FRACTION * 3:
+                break  # scene differs this far out; stop searching this side
+            if _region_changed(c, base_crop, m) < 0.15:
+                continue  # text (or something like it) still there
+            if _region_changed(c, further, m) > 0.05:
+                continue  # text area still changing (animating in/out)
+            return c
+    return None
+
+
+def blend_clean(base_crop: np.ndarray, clean_crop: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Copy the clean pixels into the masked area with a soft edge."""
+    soft = cv2.GaussianBlur(mask.astype(np.float32) / 255.0, (7, 7), 0)
+    soft = np.maximum(soft, (mask > 0).astype(np.float32))[..., None]
+    return (base_crop * (1 - soft) + clean_crop * soft).astype(np.uint8)
 
 
 def sample_indices(n: int, k: int = MAX_SAMPLES) -> list[int]:
