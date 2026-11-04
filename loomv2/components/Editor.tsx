@@ -20,7 +20,7 @@ interface Block {
   bbox: [number, number, number, number]; conf: number
   words: { text: string; bbox: [number, number, number, number]; conf: number }[]
   bgColor?: string; textColor?: string; autoBgColor?: string; autoTextColor?: string
-  cover?: "erase" | "box"; fontSize?: number
+  cover?: "erase" | "box"; bold?: boolean; autoBold?: boolean; fontSize?: number
 }
 interface Frame {
   frame_index: number; timestamp: number; frame_path: string; blocks: Block[]
@@ -74,7 +74,7 @@ function buildEvents(frames: Frame[], videoDuration: number): OverlayEvent[] {
           bbox: [...block.bbox] as [number, number, number, number],
           bgColor: block.bgColor || "", textColor: block.textColor || "",
           autoBgColor: block.autoBgColor, autoTextColor: block.autoTextColor,
-          cover: block.cover,
+          cover: block.cover, bold: block.bold, autoBold: block.autoBold,
           fontSize: block.fontSize,
           startTime: Math.max(0, ts - 0.5), endTime: nextTs, frameIndex: frame.frame_index,
         }
@@ -342,7 +342,8 @@ export default function Editor({ jobId, onBack }: EditorProps) {
             bgColor: ev.bgColor || undefined, textColor: ev.textColor || undefined,
             autoBgColor: origBlock?.autoBgColor ?? ev.autoBgColor,
             autoTextColor: origBlock?.autoTextColor ?? ev.autoTextColor,
-            cover: ev.cover,
+            cover: ev.cover, bold: ev.bold,
+            autoBold: origBlock?.autoBold ?? ev.autoBold,
             fontSize: ev.fontSize,
           }
         })

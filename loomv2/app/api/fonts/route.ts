@@ -2,7 +2,7 @@ import { NextRequest } from "next/server"
 import fs from "fs"
 import path from "path"
 import { SCRIPTS_DIR } from "../../../lib/jobPaths"
-import { INDIC_FONT_FILES } from "../../../lib/editor/indicFonts"
+import { SERVABLE_FONT_FILES } from "../../../lib/editor/indicFonts"
 
 export const runtime = "nodejs"
 
@@ -10,7 +10,7 @@ export const runtime = "nodejs"
 // with the same glyphs and metrics as the final render
 export async function GET(req: NextRequest) {
   const file = new URL(req.url).searchParams.get("file") ?? ""
-  if (!INDIC_FONT_FILES.includes(file)) return new Response("Unknown font", { status: 404 })
+  if (!SERVABLE_FONT_FILES.includes(file)) return new Response("Unknown font", { status: 404 })
   const p = path.join(SCRIPTS_DIR, "assets", file)
   if (!fs.existsSync(p)) return new Response("Font missing", { status: 404 })
   return new Response(new Uint8Array(fs.readFileSync(p)), {

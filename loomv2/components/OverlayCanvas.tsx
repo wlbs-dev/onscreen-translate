@@ -67,7 +67,8 @@ export default function OverlayCanvas({
 
       // Explicit size, or the renderer's auto rule (fit to box height), in video px
       const fsVideo = effectiveFontSize(event)
-      ctx.font = `400 ${Math.max(4, fsVideo * s)}px ${INDIC_FONT_STACK}`
+      const weight = (event.bold ?? event.autoBold) ? 700 : 400
+      ctx.font = `${weight} ${Math.max(4, fsVideo * s)}px ${INDIC_FONT_STACK}`
 
       // Like the renderer: the cover patch grows to fit the text (span padding
       // 4px each side + 10px), never past the right edge of the video

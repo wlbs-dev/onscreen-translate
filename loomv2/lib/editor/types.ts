@@ -16,6 +16,9 @@ export interface OverlayEvent {
    * bgColor means box, matching render_translations.py.
    */
   cover?: "erase" | "box"
+  /** Explicit weight choice; unset → autoBold (OCR's stroke-width guess) */
+  bold?: boolean
+  autoBold?: boolean
   /** Explicit font size in video pixels. Unset (or 0) → auto-fit to box height, see fontSize.ts */
   fontSize?: number
   startTime: number; endTime: number; frameIndex: number

@@ -15,22 +15,41 @@ export const INDIC_FONT_FILES = [
   "NotoSansTelugu-Regular.ttf",
 ]
 
-const family = (i: number) => `OTIndic${i}`
+/** Bold counterparts (scripts/assets/bold/). They have no Latin glyphs. */
+export const INDIC_BOLD_FILES = INDIC_FONT_FILES.map((f) => `bold/${f.replace("-Regular.ttf", "-Bold.ttf")}`)
+/** Bold Latin, used by the renderer for Latin runs in bold text */
+export const LATIN_BOLD_FILE = "bold/NotoSans-Bold.ttf"
 
-/** CSS font-family stack matching the renderer's */
+/** Every font file /api/fonts may serve */
+export const SERVABLE_FONT_FILES = [...INDIC_FONT_FILES, ...INDIC_BOLD_FILES, LATIN_BOLD_FILE]
+
+const family = (i: number) => `OTIndic${i}`
+const LATIN_FAMILY = "OTLatin"
+
+/**
+ * CSS font-family stack matching the renderer's. Each OTIndic family has a
+ * 400 and a 700 face. OTLatin only has a 700 face: in regular text the
+ * Devanagari font already covers Latin, in bold text it doesn't, so the
+ * browser falls through to OTLatin — the same split the renderer makes.
+ */
 export const INDIC_FONT_STACK =
-  INDIC_FONT_FILES.map((_, i) => `"${family(i)}"`).join(", ") + ", sans-serif"
+  [`"${family(0)}"`, `"${LATIN_FAMILY}"`, ...INDIC_FONT_FILES.slice(1).map((_, i) => `"${family(i + 1)}"`)]
+    .join(", ") + ", sans-serif"
 
 let loading: Promise<void> | null = null
+
+const url = (file: string) => `url(/api/fonts?file=${encodeURIComponent(file)})`
 
 /** Load all preview fonts once per page; resolves even if some fail. */
 export function loadIndicFonts(): Promise<void> {
   if (typeof document === "undefined" || typeof FontFace === "undefined") return Promise.resolve()
+  const faces = [
+    ...INDIC_FONT_FILES.map((file, i) => new FontFace(family(i), url(file), { weight: "400" })),
+    ...INDIC_BOLD_FILES.map((file, i) => new FontFace(family(i), url(file), { weight: "700" })),
+    new FontFace(LATIN_FAMILY, url(LATIN_BOLD_FILE), { weight: "700" }),
+  ]
   loading ??= Promise.allSettled(
-    INDIC_FONT_FILES.map(async (file, i) => {
-      const face = new FontFace(family(i), `url(/api/fonts?file=${encodeURIComponent(file)})`)
-      document.fonts.add(await face.load())
-    })
+    faces.map(async (face) => { document.fonts.add(await face.load()) })
   ).then(() => undefined)
   return loading
 }

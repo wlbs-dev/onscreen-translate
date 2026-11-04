@@ -245,6 +245,20 @@ function EventEditor({ event, selectionCount, onUpdate, onDelete, onClose }: {
 
         <Separator />
 
+        {/* Weight */}
+        <div className="flex items-center gap-2">
+          <Label className="text-xs" htmlFor="bold-toggle">Bold</Label>
+          <input
+            id="bold-toggle" type="checkbox" className="h-4 w-4 accent-primary"
+            checked={!!(event.bold ?? event.autoBold)}
+            onChange={(e) => onUpdate({ bold: e.target.checked })}
+          />
+          {event.bold === undefined
+            ? <Badge variant="secondary" className="text-[10px]" title="Matched to the original text">Auto</Badge>
+            : <button type="button" className="text-[10px] text-muted-foreground hover:underline"
+                onClick={() => onUpdate({ bold: undefined })}>Reset to auto</button>}
+        </div>
+
         {/* Font size */}
         <div className="space-y-2">
           <div className="flex items-center gap-2">
