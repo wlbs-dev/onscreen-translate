@@ -255,6 +255,8 @@ Everything is stored as JSON next to the jobs: `<WORKSPACE>/users.json`, `invite
 
 ## Running it for other people
 
+**Running a pilot?** [docs/PILOT.md](docs/PILOT.md) has the launch checklist (server, HTTPS, systemd, backups), an invite message, a guide for testers and what to track each week.
+
 On any Linux box or VM with ffmpeg, Node and Python:
 
 ```bash
