@@ -167,6 +167,45 @@ class TextKeys(unittest.TestCase):
         self.assertEqual(td.apply_mapping(frame, out)[0]["translation"], "<Plants make food>")
 
 
+class ProviderFailures(unittest.TestCase):
+    """A bad key or dead endpoint must fail the job, not 'translate' to English."""
+
+    def _server(self, code):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                self.send_response(code)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+            def log_message(self, *a):
+                pass
+        srv = HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_port}/translate"
+
+    def setUp(self):
+        self._endpoint = td.SARVAM_ENDPOINT
+        td.SARVAM_STATS.update(ok=0, failed=0, last_error="")
+
+    def tearDown(self):
+        td.SARVAM_ENDPOINT = self._endpoint
+
+    def test_rejected_key_raises(self):
+        td.SARVAM_ENDPOINT = self._server(403)
+        with self.assertRaises(td.ProviderAuthError):
+            td.sarvam_translate("Hello", {})
+
+    def test_server_error_is_counted(self):
+        td.SARVAM_ENDPOINT = self._server(500)
+        self.assertEqual(td.sarvam_translate("Hello", {}), "Hello")
+        self.assertEqual(td.SARVAM_STATS["failed"], 1)
+
+
 class CacheKeys(unittest.TestCase):
     def tearDown(self):
         td.TARGET_LANG = td.DEFAULT_LANG

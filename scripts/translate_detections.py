@@ -52,13 +52,29 @@ SARVAM_ENDPOINT   = os.environ.get("SARVAM_API_URL", "https://api.sarvam.ai/tran
 SARVAM_SRC_LANG   = "en-IN"
 SARVAM_MODEL      = "mayura:v1"
 OPENAI_MODEL      = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-BACKOFF_SECONDS   = [5, 15, 30, 60]
-CACHE_FILE        = "cache/translation_cache.json"
+BACKOFF_SECONDS   = [5, 15, 30, 60]   # rate limits (HTTP 429)
+NETWORK_BACKOFF   = [2, 5]            # connection errors / timeouts
+# TRANSLATION_CACHE overrides the cache path (selftest --mock uses a throwaway one)
+CACHE_FILE        = os.environ.get("TRANSLATION_CACHE", "cache/translation_cache.json")
 OVERLAP_THRESHOLD = 0.3
 IGNORE_WORDS      = {"danmusic", "dan-music"}
 
 # Set from --target-lang in main()
 TARGET_LANG       = DEFAULT_LANG
+
+
+class ProviderAuthError(RuntimeError):
+    """The translation provider rejected the API key — no point continuing."""
+
+
+# Requests that fell back to English, so a run where translation silently
+# failed (bad key, no network) is reported as an error instead of "done"
+SARVAM_STATS = {"ok": 0, "failed": 0, "last_error": ""}
+
+
+def _sarvam_failed(msg: str) -> None:
+    SARVAM_STATS["failed"] += 1
+    SARVAM_STATS["last_error"] = msg
 
 
 def parse_args() -> argparse.Namespace:
@@ -112,26 +128,44 @@ def sarvam_translate(text: str, cache: dict) -> str:
         method="POST",
     )
 
-    for attempt in range(len(BACKOFF_SECONDS) + 1):
-        if attempt > 0:
-            wait = BACKOFF_SECONDS[min(attempt - 1, len(BACKOFF_SECONDS) - 1)]
-            logger.warning(f"  Retry in {wait}s (attempt {attempt + 1})...")
-            time.sleep(wait)
+    rate_limited = network_errors = 0
+    while True:
         try:
             with urllib.request.urlopen(req, timeout=15) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
             translation = body.get("translated_text", text)
             _cache_put(cache, cache_key, translation)
+            SARVAM_STATS["ok"] += 1
             return translation
         except urllib.error.HTTPError as e:
-            if e.code == 429:
+            if e.code == 429 and rate_limited < len(BACKOFF_SECONDS):
+                wait = BACKOFF_SECONDS[rate_limited]
+                rate_limited += 1
+                logger.warning(f"  Sarvam rate limit — retry in {wait}s")
+                time.sleep(wait)
                 continue
-            logger.error(f"  Sarvam HTTP {e.code}: {e.read().decode()[:200]}")
+            detail = e.read().decode(errors="replace")[:200]
+            if e.code in (401, 403):
+                raise ProviderAuthError(
+                    f"Sarvam rejected the API key (HTTP {e.code}). Check SARVAM_API_KEY. {detail}")
+            logger.error(f"  Sarvam HTTP {e.code}: {detail}")
+            _sarvam_failed(f"HTTP {e.code}: {detail}")
             return text
-        except Exception as e:
-            logger.warning(f"  Sarvam error: {e}")
-            continue
-    return text
+        except Exception as e:  # connection refused, DNS, timeout, bad JSON
+            if network_errors < len(NETWORK_BACKOFF):
+                wait = NETWORK_BACKOFF[network_errors]
+                network_errors += 1
+                logger.warning(f"  Sarvam error: {e} — retry in {wait}s")
+                time.sleep(wait)
+                continue
+            _sarvam_failed(f"could not reach Sarvam ({e})")
+            if not SARVAM_STATS["ok"]:
+                # Never got a single answer: the network or endpoint is down,
+                # so stop instead of retrying every remaining block
+                raise ProviderAuthError(
+                    f"Could not reach Sarvam at {SARVAM_ENDPOINT}: {e}. "
+                    "Check the network / firewall allows it.")
+            return text
 
 
 # ── OpenAI grouping + translation ─────────────────────────────────────────────
@@ -234,7 +268,11 @@ Output (must have exactly {len(blocks)} entries):
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 continue
-            logger.error(f"  OpenAI HTTP {e.code}: {e.read().decode()[:200]}")
+            detail = e.read().decode(errors="replace")[:200]
+            if e.code in (401, 403):
+                raise ProviderAuthError(
+                    f"OpenAI rejected the API key (HTTP {e.code}). Check OPENAI_API_KEY. {detail}")
+            logger.error(f"  OpenAI HTTP {e.code}: {detail}")
             return {}
         except json.JSONDecodeError as e:
             logger.error(f"  OpenAI returned invalid JSON: {e}")
@@ -275,7 +313,7 @@ def overlap_ratio(set_a: set, set_b: set) -> float:
 
 
 def load_cache() -> dict:
-    Path("cache").mkdir(exist_ok=True)
+    Path(CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
     if os.path.isfile(CACHE_FILE):
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
@@ -286,7 +324,7 @@ def load_cache() -> dict:
 
 
 def save_cache(cache: dict) -> None:
-    Path("cache").mkdir(exist_ok=True)
+    Path(CACHE_FILE).parent.mkdir(parents=True, exist_ok=True)
     with open(CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
 
@@ -472,13 +510,33 @@ def main() -> None:
     logger.info(f"Target language: {language_name(TARGET_LANG)} ({TARGET_LANG})")
 
     buckets = segment_into_buckets(detections)
+    try:
+        translated = translate_all(buckets, cache, args.ai)
+    except ProviderAuthError as e:
+        save_cache(cache)
+        sys.exit(f"[ERROR] {e}")
+    save_cache(cache)
 
+    if SARVAM_STATS["failed"] and not SARVAM_STATS["ok"]:
+        sys.exit("[ERROR] Every translation request failed, so nothing was translated. "
+                 f"Last error: {SARVAM_STATS['last_error']}")
+    if SARVAM_STATS["failed"]:
+        logger.warning(f"{SARVAM_STATS['failed']} block(s) stayed in English because Sarvam "
+                       f"failed: {SARVAM_STATS['last_error']}")
+
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(translated, f, ensure_ascii=False, indent=2)
+
+    logger.info(f"Saved to {output_path}")
+
+
+def translate_all(buckets: list[list[dict]], cache: dict, use_ai: bool) -> list[dict]:
     translated = []
     for i, bucket in enumerate(buckets):
         logger.info(f"Bucket {i+1}/{len(buckets)} ({len(bucket)} frames)")
         print(f"PROGRESS:{i / max(len(buckets), 1):.3f}", flush=True)
 
-        text_to_translation = (translate_bucket_ai(bucket, cache) if args.ai
+        text_to_translation = (translate_bucket_ai(bucket, cache) if use_ai
                                else translate_bucket_standard(bucket, cache))
         for frame in bucket:
             translated.append({
@@ -487,13 +545,7 @@ def main() -> None:
                 "frame_path":  frame["frame_path"],
                 "blocks":      apply_mapping(frame, text_to_translation),
             })
-
-    save_cache(cache)
-
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(translated, f, ensure_ascii=False, indent=2)
-
-    logger.info(f"Saved to {output_path}")
+    return translated
 
 
 if __name__ == "__main__":
