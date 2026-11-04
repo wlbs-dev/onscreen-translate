@@ -153,7 +153,7 @@ export default function TeamPanel() {
                   <p>
                     {sent.emailed
                       ? <>Invite emailed to <b>{sent.email}</b>. You can also send them this link:</>
-                      : <>Email isn&apos;t set up on this server, so send <b>{sent.email}</b> this link yourself (it works once, for that address):</>}
+                      : <>{info.mailConfigured ? "We couldn't send the email" : "Email isn't set up on this server"}, so send <b>{sent.email}</b> this link yourself (it works once, for that address):</>}
                   </p>
                   <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                     <code className="flex-1 break-all" data-testid="team-invite-link">{sent.link}</code>
